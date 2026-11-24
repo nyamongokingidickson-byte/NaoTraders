@@ -111,6 +111,12 @@ export const config = {
     resendApiKey: env.RESEND_API_KEY || '',
   },
 
+  // Demo (virtual) money. Issued once per account at signup as a balanced journal entry.
+  // Set DEMO_STARTING_BALANCE_CENTS=0 to start demo wallets empty.
+  demo: {
+    startingBalanceCents: Number(env.DEMO_STARTING_BALANCE_CENTS || 1000000), // $10,000.00
+  },
+
   // Password reset is link-based: the emailed link carries a single-use ticket.
   reset: {
     ticketTtlMs: Number(env.RESET_TICKET_TTL_MS || 30 * 60 * 1000), // 30 minutes

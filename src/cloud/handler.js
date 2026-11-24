@@ -81,14 +81,17 @@ route('GET', '/healthz', async (req, res) => {
 route('POST', '/api/auth/register', async (req, res) => {
   const body = await readBody(req);
   const { token, user, expiresAt } = await accounts.register({ ...body, ip: clientIp(req) });
-  send(res, 201, { ok: true, user, wallet: await store.walletFor(user.id), accounts: accountInfo(user), expiresAt },
+  const balances = await store.walletFor(user.id);
+  send(res, 201, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user), expiresAt },
     { 'set-cookie': cookieHeader(token, req) });
 });
 
 route('POST', '/api/auth/login', async (req, res) => {
   const body = await readBody(req);
   const { token, user } = await accounts.login({ email: body.email, password: body.password, ip: clientIp(req) });
-  send(res, 200, { ok: true, user, wallet: await store.walletFor(user.id), accounts: accountInfo(user) },
+  await store.ensureWallets(user.id, config.demo.startingBalanceCents);
+  const balances = await store.walletFor(user.id);
+  send(res, 200, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user) },
     { 'set-cookie': cookieHeader(token, req) });
 });
 
@@ -117,14 +120,22 @@ route('POST', '/api/auth/reset/complete', async (req, res) => {
 route('GET', '/api/auth/session', async (req, res) => {
   const user = await sessionOf(req);
   if (!user) return send(res, 401, { ok: false, error: 'not authenticated', code: 'NOT_AUTHENTICATED' });
-  ok(res, { user, wallet: await store.walletFor(user.id), accounts: accountInfo(user), cashier: { mode: config.gates.mode } });
+  // Lazy: covers accounts created before demo wallets existed.
+  await store.ensureWallets(user.id, config.demo.startingBalanceCents);
+  ok(res, {
+    user, accounts: accountInfo(user),
+    balances: await store.walletFor(user.id),
+    cashier: { mode: config.gates.mode, realMoneyEnabled: config.gates.realMoneyEnabled },
+  });
 });
 route('GET', '/api/me', (req, res) => ROUTES.find((r) => r.path === '/api/auth/session').fn(req, res));
 
 // ---------------------------------------------------------------- wallet
 route('GET', '/api/wallet', async (req, res) => {
   const user = await requireUser(req);
-  ok(res, { wallet: await store.walletFor(user.id) });
+  await store.ensureWallets(user.id, config.demo.startingBalanceCents);
+  const balances = await store.walletFor(user.id);
+  ok(res, { ...balances, wallet: balances.real, balances, realMoneyEnabled: config.gates.realMoneyEnabled });
 });
 
 // Trading endpoints live on the market-data service during the migration; be explicit rather

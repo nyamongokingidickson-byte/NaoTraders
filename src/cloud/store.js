@@ -15,6 +15,8 @@ export async function ensureAccounts(userId) {
     ['escrow', 'Customer stakes in play', 'liability'],
     ['platform_revenue', 'Platform trading revenue', 'revenue'],
     ['house_capital', 'House capital', 'equity'],
+    // Counterparty for virtual demo credits, so demo funding stays a balanced journal entry.
+    ['demo_house', 'Demo funds issuer (virtual)', 'equity'],
   ];
   await tx(async (c) => {
     for (const [code, name, type] of platform) {
@@ -25,20 +27,62 @@ export async function ensureAccounts(userId) {
         [`customer:${userId}`, `Customer wallet ${userId}`, 'liability', userId, t]);
       await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
         [`hold:${userId}`, `Customer withdrawal holds ${userId}`, 'liability', userId, t]);
+      await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
+        [`demo:${userId}`, `Demo wallet ${userId} (virtual)`, 'liability', userId, t]);
     }
   });
 }
 
+/**
+ * Credit a new account with its starting demo funds. Virtual money, but recorded properly:
+ * a single journal entry that debits the demo issuer and credits the demo wallet, so the
+ * ledger stays balanced and the number on screen is derived, never stored or made up.
+ * Idempotent — keyed on the transaction ref, so repeat calls cannot double-credit.
+ */
+export async function seedDemoFunds(userId, cents) {
+  if (!Number.isInteger(cents) || cents <= 0) return { credited: false, cents: 0 };
+  const ref = `demo-seed:${userId}`;
+  const existing = await one('SELECT id FROM txns WHERE ref=$1 LIMIT 1', [ref]);
+  if (existing) return { credited: false, cents: 0 };
+
+  const txnId = newId('txn');
+  const t = now();
+  await tx(async (c) => {
+    await c.query('INSERT INTO txns(id,kind,ref,memo,created_at) VALUES($1,$2,$3,$4,$5)',
+      [txnId, 'demo_seed', ref, 'Starting demo (virtual) funds', t]);
+    await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, `demo:${userId}`, cents, t]);
+    await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, 'demo_house', -cents, t]);
+  });
+  return { credited: true, cents };
+}
+
+/** Accounts, demo wallet ensured and demo funds seeded once. Safe to call on every request. */
+export async function ensureWallets(userId, demoStartingCents) {
+  await ensureAccounts(userId);
+  return seedDemoFunds(userId, demoStartingCents);
+}
+
 /** Balances are derived from the journal, never stored. */
 export async function walletFor(userId) {
+  const codes = [`customer:${userId}`, `hold:${userId}`, `demo:${userId}`];
   const rows = await many(`
     SELECT account_code, COALESCE(SUM(amount),0)::bigint AS balance
-    FROM entries WHERE account_code IN ($1,$2) GROUP BY account_code`,
-    [`customer:${userId}`, `hold:${userId}`]);
+    FROM entries WHERE account_code = ANY($1) GROUP BY account_code`, [codes]);
   const sum = (code) => Number(rows.find((r) => r.account_code === code)?.balance ?? 0) || 0;
+
   const available = sum(`customer:${userId}`);
   const held = sum(`hold:${userId}`);
-  return { userId, availableCents: available, heldCents: held, totalCents: available + held, currency: 'USD' };
+  const demo = sum(`demo:${userId}`);
+
+  return {
+    currency: 'USD',
+    // Real wallet: funded only by cashier activity, which is disabled on this platform.
+    real: { availableCents: available, heldCents: held, totalCents: available + held },
+    // Demo wallet: virtual funds issued at signup, spendable in the demo platform only.
+    demo: { availableCents: demo, heldCents: 0, totalCents: demo, virtual: true },
+    // Backwards-compatible flat fields (the real wallet).
+    userId, availableCents: available, heldCents: held, totalCents: available + held,
+  };
 }
 
 // ---------------------------------------------------------------- users

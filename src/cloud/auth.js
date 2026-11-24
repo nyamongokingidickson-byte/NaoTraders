@@ -54,7 +54,8 @@ export async function register({ displayName, email, password, confirmPassword, 
     verified: true, lastLoginIp: ip,
   });
   await store.ensureAccounts(id);
-  await store.audit(id, 'user.create', { email: cleanEmail, activation: 'immediate' });
+  const demo = await store.seedDemoFunds(id, config.demo.startingBalanceCents);
+  await store.audit(id, 'user.create', { email: cleanEmail, activation: 'immediate', demoFundsCents: demo.cents });
 
   const token = crypto.randomBytes(32).toString('hex');
   const { expiresAt } = await store.createSession({ userId: id, tokenHash: sha256(token), ttlMs: config.session.ttlMs });
