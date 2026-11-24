@@ -169,8 +169,8 @@
       await api('/api/auth/login', { email, password });
       store.del(KEY_RESET_TICKET);
       setBusy(btn, false);
-      btn.textContent = 'Signed in — opening your balances…';
-      location.replace('/account');
+      btn.textContent = 'Signed in — opening the platform…';
+      location.replace('/');
     } catch (err) {
       setBusy(btn, false);
       if (err.code === 'ACCOUNT_NOT_FOUND') {
@@ -213,10 +213,10 @@
       setBusy(btn, false, 'Account created');
       showDone({
         title: 'Account created',
-        message: 'You are signed in and your account is ready. Opening your balances…',
-        cta: 'View my balances',
+        message: 'You are signed in and your account is ready. Opening the platform…',
+        cta: 'Open the platform',
       });
-      setTimeout(() => location.replace('/account'), 900);
+      setTimeout(() => location.replace('/'), 900);
     } catch (err) {
       setBusy(btn, false);
       if (err.code === 'ALREADY_REGISTERED') {
@@ -309,7 +309,7 @@
     if (view !== 'login' && view !== 'register') return;
     try {
       const res = await fetch('/api/auth/session', { credentials: 'same-origin' });
-      if (res.ok) location.replace('/account');
+      if (res.ok) location.replace('/');
     } catch { /* offline: stay on the form */ }
   })();
 })();
