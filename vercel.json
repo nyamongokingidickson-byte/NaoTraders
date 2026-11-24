@@ -39,5 +39,11 @@
     "api/index.js": {
       "includeFiles": "db/schema.postgres.sql"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/start-login",
+      "destination": "/login"
+    }
+  ]
 }
