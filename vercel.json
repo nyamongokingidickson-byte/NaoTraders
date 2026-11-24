@@ -35,6 +35,10 @@
       "destination": "/account.html"
     },
     {
+      "source": "/trade",
+      "destination": "/trade.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

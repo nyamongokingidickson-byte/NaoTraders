@@ -86,6 +86,16 @@ export const config = {
     allowedSecondDurations: [15, 30, 60, 120],
   },
 
+  // Demo trading limits. Stakes are whole cents; durations are in ticks of the feed.
+  trading: {
+    minStakeCents: Number(env.MIN_STAKE_CENTS || 100),
+    maxStakeCents: Number(env.MAX_STAKE_CENTS || 50000),
+    maxExposurePerSymbolCents: Number(env.MAX_EXPOSURE_PER_SYMBOL_CENTS || 200000),
+    allowedTickDurations: [1, 2, 3, 5, 10, 15, 30],
+    maxOpenTradesPerUser: Number(env.MAX_OPEN_TRADES_PER_USER || 20),
+    maxOpenTradesPlatformWide: Number(env.MAX_OPEN_TRADES || 500),
+  },
+
   session: {
     cookieName: 'nt_session',
     ttlMs: 1000 * 60 * 60 * 12,

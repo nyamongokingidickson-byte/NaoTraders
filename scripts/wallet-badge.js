@@ -437,6 +437,8 @@
     menu.appendChild(el('div', { class: 'nt-menu__note', text: 'Demo funds are virtual practice money and cannot be withdrawn.' }));
     menu.appendChild(el('div', { class: 'nt-menu__sep' }));
 
+    var tradeLink = el('a', { class: 'nt-menu__link', href: '/trade', text: 'Trade demo account' });
+    menu.appendChild(tradeLink);
     var balancesLink = el('a', { class: 'nt-menu__link', href: '/account', text: 'Your balances' });
     menu.appendChild(balancesLink);
 
