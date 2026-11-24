@@ -3,6 +3,14 @@
   "cleanUrls": false,
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "/api/index.js?__p=/api/:path*"
+    },
+    {
+      "source": "/healthz",
+      "destination": "/api/index.js?__p=/healthz"
+    },
+    {
       "source": "/login",
       "destination": "/auth.html"
     },
