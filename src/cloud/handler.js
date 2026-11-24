@@ -56,6 +56,30 @@ function cookieHeader(token, req) {
 }
 const clearCookie = () => `${config.session.cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 
+// The session cookie is HttpOnly, so the browser cannot see who is signed in. The trading app shell
+// bootstraps itself from localStorage before the first API call, so it needs the account list in a
+// readable place. This cookie carries only public account labels and non-secret markers — the
+// credential itself never leaves the HttpOnly cookie above.
+const ACCOUNTS_COOKIE = 'nt_accounts';
+function clientAccounts(user, balances) {
+  const tail = String(user.id).replace(/[^a-z0-9]/gi, '').slice(-8).toUpperCase();
+  return {
+    v: 1,
+    accounts: [
+      { loginid: `VRTC${tail}`, mode: 'demo', token: 'nt-demo', isVirtual: 1, currency: 'USD', balance: (balances.demo ? balances.demo.totalCents : 0) / 100 },
+      { loginid: `CR${tail}5`, mode: 'real', token: 'nt-real', isVirtual: 0, currency: 'USD', balance: (balances.real ? balances.real.totalCents : 0) / 100 },
+    ],
+  };
+}
+function accountsCookie(user, balances, req) {
+  const maxAge = Math.floor(config.session.ttlMs / 1000);
+  const secure = req.headers['x-forwarded-proto'] === 'https' || config.security.forceSecureCookie || config.env === 'production';
+  const value = Buffer.from(JSON.stringify(clientAccounts(user, balances)), 'utf8').toString('base64url');
+  return `${ACCOUNTS_COOKIE}=${value}; Path=/; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+}
+const clearAccountsCookie = () => `${ACCOUNTS_COOKIE}=; Path=/; SameSite=Lax; Max-Age=0`;
+const authCookies = (token, user, balances, req) => [cookieHeader(token, req), accountsCookie(user, balances, req)];
+
 const sessionOf = (req) => accounts.sessionForToken(parseCookies(req)[config.session.cookieName]);
 const requireUser = async (req) => {
   const user = await sessionOf(req);
@@ -84,8 +108,8 @@ route('POST', '/api/auth/register', async (req, res) => {
   const body = await readBody(req);
   const { token, user, expiresAt } = await accounts.register({ ...body, ip: clientIp(req) });
   const balances = await store.walletFor(user.id);
-  send(res, 201, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user), expiresAt },
-    { 'set-cookie': cookieHeader(token, req) });
+  send(res, 201, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user), client: clientAccounts(user, balances), expiresAt },
+    { 'set-cookie': authCookies(token, user, balances, req) });
 });
 
 route('POST', '/api/auth/login', async (req, res) => {
@@ -93,19 +117,19 @@ route('POST', '/api/auth/login', async (req, res) => {
   const { token, user } = await accounts.login({ email: body.email, password: body.password, ip: clientIp(req) });
   await store.ensureWallets(user.id, config.demo.startingBalanceCents);
   const balances = await store.walletFor(user.id);
-  send(res, 200, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user) },
-    { 'set-cookie': cookieHeader(token, req) });
+  send(res, 200, { ok: true, user, balances, wallet: balances.real, accounts: accountInfo(user), client: clientAccounts(user, balances) },
+    { 'set-cookie': authCookies(token, user, balances, req) });
 });
 
 route('POST', '/api/auth/logout', async (req, res) => {
   await accounts.logout(parseCookies(req)[config.session.cookieName]);
-  send(res, 200, { ok: true }, { 'set-cookie': clearCookie() });
+  send(res, 200, { ok: true }, { 'set-cookie': [clearCookie(), clearAccountsCookie()] });
 });
 
 route('POST', '/api/auth/logout-all', async (req, res) => {
   const user = await requireUser(req);
   const count = await accounts.logoutAll(user.id);
-  send(res, 200, { ok: true, sessionsInvalidated: count }, { 'set-cookie': clearCookie() });
+  send(res, 200, { ok: true, sessionsInvalidated: count }, { 'set-cookie': [clearCookie(), clearAccountsCookie()] });
 });
 
 route('POST', '/api/auth/forgot-password', async (req, res) => {
@@ -124,11 +148,13 @@ route('GET', '/api/auth/session', async (req, res) => {
   if (!user) return send(res, 401, { ok: false, error: 'not authenticated', code: 'NOT_AUTHENTICATED' });
   // Lazy: covers accounts created before demo wallets existed.
   await store.ensureWallets(user.id, config.demo.startingBalanceCents);
-  ok(res, {
+  const balances = await store.walletFor(user.id);
+  send(res, 200, {
+    ok: true,
     user, accounts: accountInfo(user),
-    balances: await store.walletFor(user.id),
+    balances, client: clientAccounts(user, balances),
     cashier: { mode: config.gates.mode, realMoneyEnabled: config.gates.realMoneyEnabled },
-  });
+  }, { 'set-cookie': accountsCookie(user, balances, req) });
 });
 route('GET', '/api/me', (req, res) => ROUTES.find((r) => r.path === '/api/auth/session').fn(req, res));
 
@@ -197,6 +223,7 @@ route('POST', '/api/trades', async (req, res) => {
     contractType: body.contractType || body.contract_type,
     stakeCents: body.stakeCents !== undefined ? Number(body.stakeCents) : Math.round(Number(body.stake || 0) * 100),
     durationTicks: body.durationTicks !== undefined ? Number(body.durationTicks) : Number(body.duration),
+    mode: body.mode === undefined ? 'demo' : String(body.mode).toLowerCase(),
   });
   send(res, 201, { ok: true, ...result });
 });
@@ -204,7 +231,11 @@ route('POST', '/api/trades', async (req, res) => {
 route('GET', '/api/trades', async (req, res) => {
   const user = await requireUser(req);
   const url = new URL(req.url, 'http://localhost');
-  const result = await trading.listTrades(user.id, { status: url.searchParams.get('status') || 'all', limit: url.searchParams.get('limit') });
+  const result = await trading.listTrades(user.id, {
+    status: url.searchParams.get('status') || 'all',
+    limit: url.searchParams.get('limit'),
+    mode: url.searchParams.get('mode'),
+  });
   ok(res, { ...result, balances: await store.walletFor(user.id) });
 });
 

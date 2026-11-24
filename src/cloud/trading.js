@@ -23,6 +23,12 @@ const fail = (message, code, status = 400, extra = {}) =>
 
 export const CONTRACT_TYPES = ['CALL', 'PUT'];
 
+// Two accounts share one identity: the demo wallet (virtual funds, fully tradeable) and the real
+// wallet (ledger-backed cash, currently unfunded because the cashier is not switched on yet).
+// A contract records which wallet paid for it, and every entry it books goes back to that wallet.
+export const MODES = ['demo', 'real'];
+export const accountCode = (mode, userId) => (mode === 'real' ? `customer:${userId}` : `demo:${userId}`);
+
 // Payout ladder, in basis points of stake. Kept in the table so it can be changed without a deploy.
 const DEFAULT_RULES = [
   [1, 18000], [2, 18300], [3, 18500], [5, 18800],
@@ -57,6 +63,7 @@ export function tradeView(row) {
   const payout = Number(row.payout_cents);
   return {
     id: row.id,
+    mode: row.mode || 'demo',
     symbol: row.symbol,
     contractType: row.contract_type,
     stakeCents: stake,
@@ -76,7 +83,8 @@ export function tradeView(row) {
   };
 }
 
-function validate({ symbol, contractType, stakeCents, durationTicks }) {
+function validate({ symbol, contractType, stakeCents, durationTicks, mode }) {
+  if (!MODES.includes(mode)) throw fail('mode must be demo or real.', 'MODE_INVALID');
   const market = findMarket(symbol);
   if (!market) throw fail(`Unknown market "${symbol}".`, 'SYMBOL_UNKNOWN', 404);
   const type = String(contractType || '').toUpperCase();
@@ -89,20 +97,23 @@ function validate({ symbol, contractType, stakeCents, durationTicks }) {
   if (!cfg().allowedTickDurations.includes(duration)) {
     throw fail(`Duration must be one of ${cfg().allowedTickDurations.join(', ')} ticks.`, 'DURATION_INVALID');
   }
-  return { market, type, stake, duration };
+  return { market, type, stake, duration, mode };
 }
 
-/** Open a contract against the demo wallet. */
-export async function openTrade({ userId, symbol, contractType, stakeCents, durationTicks }) {
-  const { market, type, stake, duration } = validate({ symbol, contractType, stakeCents, durationTicks });
+/** Open a contract against the demo or real wallet. */
+export async function openTrade({ userId, symbol, contractType, stakeCents, durationTicks, mode = 'demo' }) {
+  const { market, type, stake, duration, mode: walletMode } = validate({ symbol, contractType, stakeCents, durationTicks, mode });
   await ensureTrading();
   await store.ensureWallets(userId, config.demo.startingBalanceCents);
 
   const wallet = await store.walletFor(userId);
-  if (wallet.demo.availableCents < stake) {
-    throw fail('Not enough demo funds for that stake.', 'INSUFFICIENT_FUNDS', 400, {
-      availableCents: wallet.demo.availableCents,
-    });
+  const funds = wallet[walletMode];
+  if (funds.availableCents < stake) {
+    throw fail(
+      walletMode === 'real'
+        ? 'Your real account has no funds. Deposits are not available yet — trade on the demo account.'
+        : 'Not enough demo funds for that stake.',
+      'INSUFFICIENT_FUNDS', 400, { mode: walletMode, availableCents: funds.availableCents });
   }
 
   const open = await one(
@@ -119,9 +130,12 @@ export async function openTrade({ userId, symbol, contractType, stakeCents, dura
   if (!rule) throw fail('No payout is configured for that contract.', 'PAYOUT_UNAVAILABLE', 503);
   const payoutCents = Math.floor((stake * Number(rule.payout_multiplier_bp)) / 10000);
 
-  const entryEpoch = now();
+  // Enter at the tick that is currently on the tape, not at an arbitrary millisecond between
+  // ticks: the price a trader sees is the tick, so that is the price the contract opens at, and the
+  // contract then runs for exactly `duration` ticks from it.
+  const entryEpoch = Math.floor(now() / FEED_TICK_MS) * FEED_TICK_MS;
   const entry = quoteAt(market.code, entryEpoch).quote;
-  const expiryEpoch = Math.floor(entryEpoch / FEED_TICK_MS) * FEED_TICK_MS + duration * FEED_TICK_MS;
+  const expiryEpoch = entryEpoch + duration * FEED_TICK_MS;
   const id = store.newId('trd');
   const t = entryEpoch;
 
@@ -129,14 +143,14 @@ export async function openTrade({ userId, symbol, contractType, stakeCents, dura
     const txnId = store.newId('txn');
     await c.query('INSERT INTO txns(id,kind,ref,memo,created_at) VALUES($1,$2,$3,$4,$5)',
       [txnId, 'trade_stake', `trade-open:${id}`, `${type} ${market.code} stake`, t]);
-    await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, `demo:${userId}`, -stake, t]);
+    await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, accountCode(walletMode, userId), -stake, t]);
     await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, 'escrow', stake, t]);
 
     await c.query(
-      `INSERT INTO trades(id,user_id,symbol,contract_type,stake_cents,duration_ticks,entry_spot,entry_epoch,
+      `INSERT INTO trades(id,user_id,mode,symbol,contract_type,stake_cents,duration_ticks,entry_spot,entry_epoch,
                           expiry_epoch,status,payout_cents,payout_rule_id,payout_source,ticks_seen,opened_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN',$10,$11,$12,0,$13)`,
-      [id, userId, market.code, type, stake, duration, entry, entryEpoch, expiryEpoch, payoutCents, rule.id, rule.source, t]);
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'OPEN',$11,$12,$13,0,$14)`,
+      [id, userId, walletMode, market.code, type, stake, duration, entry, entryEpoch, expiryEpoch, payoutCents, rule.id, rule.source, t]);
   });
 
   await store.audit(userId, 'trade.open', { id, symbol: market.code, type, stake, duration });
@@ -183,6 +197,7 @@ async function settleOne(userId, tradeId) {
     if (status === 'WON') profit = payout - stake;
     if (status === 'LOST') profit = -stake;
 
+    const walletCode = accountCode(row.mode || 'demo', userId);
     const t = now();
     const ref = `trade-settle:${row.id}`;
     const txnId = store.newId('txn');
@@ -198,10 +213,10 @@ async function settleOne(userId, tradeId) {
 
     if (status === 'VOID') {
       await entry2('escrow', -stake);
-      await entry2(`demo:${userId}`, stake);
+      await entry2(walletCode, stake);
     } else if (status === 'WON') {
       await entry2('escrow', -stake);
-      await entry2(`demo:${userId}`, payout);
+      await entry2(walletCode, payout);
       await entry2('platform_revenue', -(payout - stake));
     } else {
       await entry2('escrow', -stake);
@@ -212,16 +227,21 @@ async function settleOne(userId, tradeId) {
     await c.query(
       'UPDATE trades SET status=$1, exit_spot=$2, profit_cents=$3, settled_at=$4, ticks_seen=$5 WHERE id=$6',
       [status, exit, profit, t, ticksSeen, row.id]);
-    return { id: row.id, status, exit, entry, symbol: row.symbol };
+    return { id: row.id, status, exit, entry, symbol: row.symbol, mode: row.mode || 'demo' };
   });
 }
 
-export async function listTrades(userId, { status = 'all', limit = 50 } = {}) {
+export async function listTrades(userId, { status = 'all', limit = 50, mode = null } = {}) {
   await settleDue(userId);
   const n = Math.max(1, Math.min(200, Number(limit) || 50));
-  const rows = status === 'all'
-    ? await many('SELECT * FROM trades WHERE user_id=$1 ORDER BY opened_at DESC LIMIT $2', [userId, n])
-    : await many('SELECT * FROM trades WHERE user_id=$1 AND status=$2 ORDER BY opened_at DESC LIMIT $3', [userId, String(status).toUpperCase(), n]);
+  const wantMode = MODES.includes(mode) ? mode : null;
+  const where = ['user_id=$1'];
+  const args = [userId];
+  if (wantMode) { args.push(wantMode); where.push(`mode=$${args.length}`); }
+  if (status !== 'all') { args.push(String(status).toUpperCase()); where.push(`status=$${args.length}`); }
+  args.push(n);
+  const rows = await many(
+    `SELECT * FROM trades WHERE ${where.join(' AND ')} ORDER BY opened_at DESC LIMIT $${args.length}`, args);
   const summary = await one(
     `SELECT COUNT(*)::int AS count,
             COUNT(*) FILTER (WHERE status='WON')::int AS won,
@@ -229,7 +249,8 @@ export async function listTrades(userId, { status = 'all', limit = 50 } = {}) {
             COUNT(*) FILTER (WHERE status='VOID')::int AS void,
             COUNT(*) FILTER (WHERE status='OPEN')::int AS open,
             COALESCE(SUM(profit_cents) FILTER (WHERE status IN ('WON','LOST')),0)::bigint AS realised_cents
-       FROM trades WHERE user_id=$1`, [userId]);
+       FROM trades WHERE ${where.slice(0, wantMode ? 2 : 1).join(' AND ')}`,
+    wantMode ? [userId, wantMode] : [userId]);
   return {
     trades: rows.map(tradeView),
     summary: {

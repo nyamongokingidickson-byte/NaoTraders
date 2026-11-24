@@ -11,9 +11,10 @@
  *
  * Honesty rules baked in:
  *   • prices come from /api/markets, which labels them synthetic; nothing is invented here
- *   • no `authorize` is ever faked: it is answered with an error, so the app stays unauthenticated
- *     — trading is performed against the platform session cookie and the demo wallet, via
- *     /api/trades, and every stake/payout is booked in the ledger
+ *   • `authorize` is never faked: it is answered from the platform's own session (one sign-in at
+ *     /login covers the whole site) and names the same two accounts the wallet shows — the demo
+ *     wallet, which trades, and the real wallet, which exists but is unfunded because the cashier
+ *     is not switched on yet
  *   • unsupported Deriv features return a protocol-shaped error instead of a made-up success
  */
 (function () {
@@ -26,8 +27,129 @@
   var DERIV_HOST = /(^|\.)derivws\.com$|(^|\.)deriv\.com$|(^|\.)binary\.com$|(^|\.)binaryws\.com$/i;
   var TICK_MS = 2000;
 
-  var stats = { sockets: 0, requests: 0, served: 0, errors: 0, subscriptions: 0, byType: {}, unknownKeys: {} };
+  var stats = { sockets: 0, requests: 0, served: 0, errors: 0, subscriptions: 0, byType: {}, unknownKeys: {}, log: [] };
   window.__ntBridgeStats = stats;
+
+  // ---------------------------------------------------------------- account bootstrap
+  // The app shell boots from localStorage before it makes any request: it reads `accountsList`
+  // (loginid → token), `clientAccounts` (loginid → currency/type), `active_loginid`, `authToken`
+  // and `account_type`, and only then opens its socket and asks to be authorised. The server puts
+  // the account list in the readable `nt_accounts` cookie at sign-in, so this runs synchronously in
+  // <head> and the app is already signed in by the time its bundles execute — no second login.
+  var ACCOUNTS_COOKIE = 'nt_accounts';
+
+  function readCookie(name) {
+    var parts = String(document.cookie || '').split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].trim();
+      if (kv.indexOf(name + '=') === 0) return decodeURIComponent(kv.slice(name.length + 1));
+    }
+    return '';
+  }
+
+  function parseAccounts(raw) {
+    if (!raw) return null;
+    try {
+      var data = JSON.parse(raw);
+      if (data && data.accounts && data.accounts.length) return data;
+    } catch (e) { /* not JSON */ }
+    return null;
+  }
+
+  // The mirror app deletes any cookie it does not recognise while it boots, so the durable copy of
+  // the account list lives in localStorage (written at sign-in and by the session check below).
+  function readAccounts() {
+    try {
+      var stored = parseAccounts(window.localStorage.getItem('nt:client'));
+      if (stored) return stored;
+    } catch (e) { /* private mode */ }
+    var raw = readCookie(ACCOUNTS_COOKIE);
+    if (raw) {
+      try {
+        var b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4) b64 += '=';
+        var data = parseAccounts(decodeURIComponent(escape(atob(b64))));
+        if (data) {
+          try { window.localStorage.setItem('nt:client', JSON.stringify(data)); } catch (e) {}
+          return data;
+        }
+      } catch (e) { /* fall through */ }
+    }
+    return null;
+  }
+
+  var CLEARABLE = ['accountsList', 'clientAccounts', 'active_loginid', 'authToken', 'account_type'];
+
+  function seedAppStorage() {
+    var data = readAccounts();
+    var store = window.localStorage;
+    if (!data) {
+      // Signed out: clear the app's stale account state so it stops believing it is authorised.
+      for (var i = 0; i < CLEARABLE.length; i++) { try { store.removeItem(CLEARABLE[i]); } catch (e) {} }
+      return null;
+    }
+    var wanted = (function () { try { return store.getItem('nt:active-account') === 'real' ? 'real' : 'demo'; } catch (e) { return 'demo'; } })();
+    var active = null;
+    var accountsList = {};
+    var clientAccounts = {};
+    for (var j = 0; j < data.accounts.length; j++) {
+      var a = data.accounts[j];
+      if (!a || !a.loginid) continue;
+      if (a.mode === wanted) active = a;
+      accountsList[a.loginid] = a.token;
+      clientAccounts[a.loginid] = {
+        loginid: a.loginid, token: a.token, currency: a.currency || 'USD',
+        is_virtual: a.mode === 'demo' ? 1 : 0, account_type: a.mode === 'demo' ? 'demo' : 'real',
+      };
+    }
+    if (!active) active = data.accounts[0];
+    try {
+      store.setItem('accountsList', JSON.stringify(accountsList));
+      store.setItem('clientAccounts', JSON.stringify(clientAccounts));
+      store.setItem('active_loginid', active.loginid);
+      store.setItem('authToken', active.token);
+      store.setItem('account_type', active.mode === 'demo' ? 'demo' : 'real');
+    } catch (e) { /* private mode: the app will simply ask to sign in */ }
+    return { mode: active.mode, loginid: active.loginid, accounts: data.accounts };
+  }
+
+  var bootstrap = seedAppStorage();
+  window.__ntAccount = bootstrap;
+
+  // Nothing stored yet. A session may still exist (old sign-in, cleared browser storage), so ask
+  // the server once and, if it knows who this is, seed and reload so the app boots authorised.
+  if (!bootstrap) {
+    var tried = false;
+    try { tried = sessionStorage.getItem('nt:seed-tried') === '1'; } catch (e) {}
+    if (!tried) {
+      api('/api/auth/session').then(function (r) {
+        try {
+          if (r.ok && r.body.client) {
+            localStorage.setItem('nt:client', JSON.stringify(r.body.client));
+            sessionStorage.setItem('nt:seed-tried', '1');
+            window.location.reload();
+          } else if (!r.ok) {
+            localStorage.removeItem('nt:client');
+          }
+        } catch (e) { /* nothing more we can do */ }
+      }).catch(function () { /* offline: the header still explains the state */ });
+    }
+  } else {
+    try { sessionStorage.removeItem('nt:seed-tried'); } catch (e) {}
+  }
+  // The header's account switch writes the choice then fires this; keep the two in step.
+  document.addEventListener('nt:account-changed', function () {
+    var next = seedAppStorage();
+    window.__ntAccount = next;
+    // The app shell reads the account list once, at boot, and authorises with it. On the pages that
+    // host it, a switch therefore reloads into the other account instead of pretending to switch
+    // under a running client (a bot is never left trading the account you just left).
+    if (document.querySelector('script[src*="static/js/index."]')) {
+      try { window.location.reload(); } catch (e) { /* nothing to reload */ }
+    }
+  });
+  // A stale readable cookie (session expired server-side) still boots the app as signed in; the
+  // first api() call answers 401 and the bridge reports InvalidToken, which is correct and visible.
 
   // ---------------------------------------------------------------- helpers
   function api(path, options) {
@@ -145,6 +267,15 @@
       var key = Object.keys(req).filter(function (k) { return k !== 'req_id'; }).join(',');
       stats.unknownKeys[key] = (stats.unknownKeys[key] || 0) + 1;
     }
+    stats.log.push({
+      t: type, at: Date.now(),
+      symbol: req.symbol || req.ticks || req.ticks_history || req.candles || '',
+      subscribe: req.subscribe ? 1 : 0, contract: req.contract_id || '',
+      detail: (req.buy || req.proposal)
+        ? { buy: req.buy, proposal: req.proposal, price: req.price, underlying: (req.parameters || {}).underlying_symbol || req.symbol }
+        : null,
+    });
+    if (stats.log.length > 200) stats.log.shift();
 
     Promise.resolve()
       .then(function () { return handle(self, req, type); })
@@ -175,9 +306,15 @@
     if (req.sell) return 'sell';
     if (req.portfolio) return 'portfolio';
     if (req.profit_table) return 'profit_table';
+    if (req.proposal_open_contract) return 'proposal_open_contract';
     if (req.balance) return 'balance';
     if (req.statement) return 'statement';
     if (req.authorize) return 'authorize';
+    if (req.get_settings) return 'get_settings';
+    if (req.get_account_status) return 'get_account_status';
+    if (req.landing_company) return 'landing_company';
+    if (req.residence_list) return 'residence_list';
+    if (req.states_list) return 'states_list';
     if (req.forget_all) return 'forget_all';
     if (req.forget) return 'forget';
     if (req.website_status) return 'website_status';
@@ -195,6 +332,26 @@
   }
 
   var NOT_SUPPORTED = 'This platform serves simulated market data and demo contracts only.';
+
+  // Which wallet this socket trades with. Set by authorize, and refreshed from the boot state.
+  function modeOf(socket) {
+    if (socket && socket._mode) return socket._mode;
+    if (window.__ntAccount && window.__ntAccount.mode) return window.__ntAccount.mode;
+    return 'demo';
+  }
+  function loginidOf(mode) {
+    var list = (window.__ntAccount && window.__ntAccount.accounts) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].mode === mode) return list[i].loginid;
+    return mode === 'real' ? 'CR00000000' : 'VRTC00000000';
+  }
+  function modeOfToken(token) {
+    if (token === 'nt-real') return 'real';
+    if (token === 'nt-demo') return 'demo';
+    return null;
+  }
+  var REAL_UNFUNDED = 'Your real account has no funds yet. Deposits are not available on this platform, so switch to the demo account to trade.';
+  // API error codes → the protocol codes a Deriv client knows how to display.
+  var ERROR_ALIASES = { INSUFFICIENT_FUNDS: 'InsufficientBalance', TOO_MANY_OPEN_TRADES: 'MaxContractsReached', EXPOSURE_LIMIT: 'MaxContractsReached' };
 
   // ---------------------------------------------------------------- handlers
   function handle(socket, req, type) {
@@ -303,7 +460,7 @@
       return handleBuy(socket, req);
     }
     if (type === 'portfolio') {
-      return api('/api/trades?limit=50').then(function (r) {
+      return api('/api/trades?limit=50&mode=' + modeOf(socket)).then(function (r) {
         if (!r.ok) return socket._deliver(errorFor(req, 'portfolio', 'AuthorizationRequired', 'Sign in to see contracts.'));
         var open = (r.body.trades || []).filter(function (t) { return t.status === 'OPEN'; });
         socket._deliver({
@@ -324,7 +481,7 @@
       });
     }
     if (type === 'profit_table' || type === 'statement') {
-      return api('/api/trades?limit=50').then(function (r) {
+      return api('/api/trades?limit=50&mode=' + modeOf(socket)).then(function (r) {
         var list = (r.body.trades || []).filter(function (t) { return t.status !== 'OPEN'; });
         socket._deliver({
           msg_type: type,
@@ -344,10 +501,14 @@
     if (type === 'balance') {
       return api('/api/wallet').then(function (r) {
         if (!r.ok) return socket._deliver(errorFor(req, 'balance', 'AuthorizationRequired', 'Sign in to see your balance.'));
-        var demo = r.body.demo || { totalCents: 0 };
+        var mode = modeOf(socket);
+        var wallet = (mode === 'real' ? r.body.real : r.body.demo) || { totalCents: 0 };
         socket._deliver({
           msg_type: 'balance',
-          balance: { balance: demo.totalCents / 100, currency: 'USD', loginid: 'NT-DEMO', account_type: 'demo' },
+          balance: {
+            balance: wallet.totalCents / 100, currency: 'USD',
+            loginid: loginidOf(mode), account_type: mode, is_virtual: mode === 'demo' ? 1 : 0,
+          },
           echo_req: req, req_id: req.req_id,
         });
         if (req.subscribe) {
@@ -357,7 +518,9 @@
           socket._subs[id] = { kind: 'balance', timer: setInterval(function () {
             api('/api/wallet').then(function (w) {
               if (!w.ok) return;
-              sock._deliver({ msg_type: 'balance', balance: { balance: (w.body.demo || {}).totalCents / 100, currency: 'USD', loginid: 'NT-DEMO', account_type: 'demo' }, echo_req: req, req_id: req.req_id });
+              var m2 = modeOf(sock);
+              var w2 = (m2 === 'real' ? w.body.real : w.body.demo) || { totalCents: 0 };
+              sock._deliver({ msg_type: 'balance', balance: { balance: w2.totalCents / 100, currency: 'USD', loginid: loginidOf(m2), account_type: m2, is_virtual: m2 === 'demo' ? 1 : 0 }, echo_req: req, req_id: req.req_id });
             });
           }, 3000) };
         }
@@ -374,10 +537,73 @@
       return socket._deliver({ msg_type: type, forget: type === 'forget' ? 1 : ids, echo_req: req, req_id: req.req_id });
     }
     if (type === 'authorize') {
-      // Never faked: this deployment has one identity system, the platform session cookie.
-      return socket._deliver(errorFor(req, 'authorize', 'InvalidToken', 'Deriv authorisation is not used on this platform. Sign in with NovaTrade KE.'));
+      // Not faked: the answer is the platform's own session. The token only says which of the two
+      // accounts the app wants; the credential is the HttpOnly session cookie the request carries.
+      return Promise.all([api('/api/auth/session'), api('/api/wallet')]).then(function (out) {
+        var session = out[0], wallet = out[1];
+        if (!session.ok || !session.body.user) {
+          return socket._deliver(errorFor(req, 'authorize', 'InvalidToken', 'Sign in to NovaTrade KE to use the trading tools.'));
+        }
+        var user = session.body.user;
+        var mode = modeOfToken(req.authorize) || modeOf(socket);
+        socket._mode = mode;
+        var demo = (wallet.body && wallet.body.demo) || { totalCents: 0 };
+        var real = (wallet.body && wallet.body.real) || { totalCents: 0 };
+        var accounts = (window.__ntAccount && window.__ntAccount.accounts) || [];
+        var accountList = accounts.length ? accounts.map(function (a) {
+          return { loginid: a.loginid, currency: a.currency || 'USD', is_virtual: a.mode === 'demo' ? 1 : 0, account_type: a.mode };
+        }) : [{ loginid: loginidOf('demo'), currency: 'USD', is_virtual: 1, account_type: 'demo' },
+              { loginid: loginidOf('real'), currency: 'USD', is_virtual: 0, account_type: 'real' }];
+        var balance = (mode === 'real' ? real.totalCents : demo.totalCents) / 100;
+        socket._deliver({
+          msg_type: 'authorize',
+          echo_req: req, req_id: req.req_id,
+          authorize: {
+            email: user.email,
+            user_id: user.id,
+            country: 'ke',
+            currency: 'USD',
+            balance: balance,
+            loginid: loginidOf(mode),
+            is_virtual: mode === 'demo' ? 1 : 0,
+            landing_company_name: 'svg',
+            landing_company_fullname: 'NovaTrade KE (simulated)',
+            scopes: ['read', 'trade', 'trading_information', 'payments'],
+            preferred_language: 'EN',
+            account_list: accountList,
+            upgradeable_landing_companies: [],
+          },
+        });
+      });
     }
-    if (type === 'sell' || type === 'transaction' || type === 'ping_stream') {
+    if (type === 'get_settings') {
+      return api('/api/auth/session').then(function (r) {
+        if (!r.ok) return socket._deliver(errorFor(req, 'get_settings', 'AuthorizationRequired', 'Sign in to continue.'));
+        socket._deliver({
+          msg_type: 'get_settings', echo_req: req, req_id: req.req_id,
+          get_settings: {
+            country_code: 'ke', email_consent: 0, email_consent_prompt: '',
+            first_name: '', last_name: '', phone: '', residence: 'ke', scope: ['read', 'trade'],
+          },
+        });
+      });
+    }
+    if (type === 'get_account_status') {
+      return socket._deliver({
+        msg_type: 'get_account_status', echo_req: req, req_id: req.req_id,
+        get_account_status: { authentication: { attempts: { count: 0, available: 3 } }, status: ['not_authenticated'], risk_classification: 'low' },
+      });
+    }
+    if (type === 'landing_company' || type === 'residence_list' || type === 'states_list') {
+      return socket._deliver(errorFor(req, type, 'UnrecognisedRequest', 'Not needed on this platform.'));
+    }
+    if (type === 'proposal_open_contract') {
+      return streamOpenContract(socket, req);
+    }
+    if (type === 'transaction') {
+      return streamTransactions(socket, req);
+    }
+    if (type === 'sell' || type === 'ping_stream') {
       return socket._deliver(errorFor(req, type, 'UnsupportedFeature', NOT_SUPPORTED));
     }
     return socket._deliver(errorFor(req, type || 'unknown', 'UnrecognisedRequest', 'The market data bridge does not implement "' + type + '".'));
@@ -390,16 +616,15 @@
       var count = req.count || 60;
       var style = req.style || 'ticks';
       if (style === 'candles') {
-        return api('/api/markets/' + encodeURIComponent(market) + '/candles?granularity=' + (req.granularity || 60) + '&count=' + count)
+        var granularity = Number(req.granularity || 60);
+        return api('/api/markets/' + encodeURIComponent(market) + '/candles?granularity=' + granularity + '&count=' + count)
           .then(function (r) {
             var rows = (r.body.candles || []).map(function (c) {
               return { epoch: Math.floor(c.epoch / 1000), open: c.open, high: c.high, low: c.low, close: c.close };
             });
-            socket._deliver({
-              msg_type: 'candles',
-              candles: rows,
-              echo_req: req, req_id: req.req_id,
-            });
+            socket._deliver({ msg_type: 'candles', candles: rows, echo_req: req, req_id: req.req_id });
+            // A candle chart keeps listening: stream the forming candle as an `ohlc`.
+            if (req.subscribe) streamOhlc(socket, req, requested, market, granularity);
           });
       }
       return api('/api/markets/' + encodeURIComponent(market) + '/ticks?count=' + count).then(function (r) {
@@ -412,10 +637,18 @@
             times: list.map(function (t) { return Math.floor(t.epoch / 1000); }),
           },
         });
+        // `subscribe: 1` on a tick history means "and then keep sending me ticks", which is exactly
+        // how the bot builder starts listening before it trades.
+        if (req.subscribe) streamTicks(socket, req, requested, market, count);
       });
     }
 
     // ticks (subscribe) — one immediate tick, then one every 2 s while subscribed
+    return streamTicks(socket, req, requested, market, 0);
+  }
+
+  /** One immediate tick, then one every TICK_MS until the client forgets the subscription. */
+  function streamTicks(socket, req, requested, market, skipInitial) {
     return loadMarkets().then(function (map) {
       var meta = map[market] || { digits: 2, last: 0 };
       var digits = digitsFor(meta);
@@ -430,10 +663,12 @@
           },
         });
       };
-      api('/api/markets/' + encodeURIComponent(market) + '/ticks?count=1').then(function (r) {
-        var t = (r.body.ticks || [])[0];
-        if (t) send(t.quote, t.epoch);
-      });
+      if (!skipInitial) {
+        api('/api/markets/' + encodeURIComponent(market) + '/ticks?count=1').then(function (r) {
+          var t = (r.body.ticks || [])[0];
+          if (t) send(t.quote, t.epoch);
+        });
+      }
       if (!req.subscribe) return;
       stats.subscriptions += 1;
       if (socket._subs[id] && socket._subs[id].timer) clearInterval(socket._subs[id].timer);
@@ -446,7 +681,48 @@
     });
   }
 
+  /** The forming candle, refreshed every tick, shaped as an `ohlc` message. */
+  function streamOhlc(socket, req, requested, market, granularity) {
+    stats.subscriptions += 1;
+    var id = req.req_id || ('ohlc:' + market);
+    var periodMs = granularity * 1000;
+    var send = function () {
+      var now = Date.now();
+      var start = Math.floor(now / periodMs) * periodMs;
+      api('/api/markets/' + encodeURIComponent(market) + '/candles?granularity=' + granularity + '&count=2').then(function (r) {
+        var rows = r.body.candles || [];
+        var last = rows[rows.length - 1];
+        if (!last) return;
+        socket._deliver({
+          msg_type: 'ohlc',
+          echo_req: req, req_id: req.req_id,
+          ohlc: {
+            open: last.open, high: last.high, low: last.low, close: last.close,
+            epoch: Math.floor((last.epoch || start) / 1000), granularity,
+            id: String(Math.floor(start / 1000)), symbol: requested,
+          },
+        });
+      });
+    };
+    send();
+    if (socket._subs[id] && socket._subs[id].timer) clearInterval(socket._subs[id].timer);
+    socket._subs[id] = { kind: 'ohlc', symbol: market, timer: setInterval(send, TICK_MS) };
+  }
+
   function handleProposal(socket, req) {
+    if (modeOf(socket) === 'real') {
+      return Promise.resolve(api('/api/wallet')).then(function (w) {
+        var real = (w.body && w.body.real) || { totalCents: 0 };
+        if (real.totalCents <= 0) {
+          return socket._deliver(errorFor(req, 'proposal', 'InsufficientBalance', REAL_UNFUNDED));
+        }
+        return buildProposal(socket, req);
+      });
+    }
+    return buildProposal(socket, req);
+  }
+
+  function buildProposal(socket, req) {
     var market = mapSymbol(req.symbol || (req.proposal && req.proposal.symbol));
     var type = (req.contract_type || (req.proposal && req.proposal.contract_type) || 'CALL').toUpperCase();
     var duration = Number(req.duration || 5);
@@ -481,8 +757,9 @@
   }
 
   function handleBuy(socket, req) {
-    var market = mapSymbol(req.symbol || req.buy);
-    var amount = Number(req.price || 10);
+    var params = req.parameters || {};
+    var market = mapSymbol(params.symbol || params.underlying_symbol || req.symbol || (ALIASES[req.buy] ? req.buy : ''));
+    var amount = Number(params.amount || req.price || 10);
     var type = (req.parameters && req.parameters.contract_type) || (req.contract_type) || 'CALL';
     var duration = Number((req.parameters && req.parameters.duration) || req.duration || 5);
 
@@ -491,6 +768,7 @@
       if (!session.ok) {
         return socket._deliver(errorFor(req, 'buy', 'AuthorizationRequired', 'Sign in with NovaTrade KE to trade.'));
       }
+      var mode = modeOf(socket);
       return api('/api/trades', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -499,10 +777,14 @@
           contractType: String(type).toUpperCase(),
           stakeCents: Math.round(amount * 100),
           durationTicks: duration,
+          mode: mode,
         }),
       }).then(function (res) {
         if (!res.ok) {
-          return socket._deliver(errorFor(req, 'buy', res.body.code || 'ContractCreationFailure', res.body.error || 'Could not create that contract.'));
+          var code = ERROR_ALIASES[res.body.code] || res.body.code || 'ContractCreationFailure';
+          var message = res.body.error || 'Could not create that contract.';
+          if (mode === 'real' && res.body.code === 'INSUFFICIENT_FUNDS') message = REAL_UNFUNDED;
+          return socket._deliver(errorFor(req, 'buy', code, message));
         }
         var t = res.body.trade;
         socket._deliver({
@@ -515,12 +797,156 @@
             payout: t.payoutCents / 100,
             start_time: Math.floor(t.entryEpoch / 1000),
             purchase_time: Math.floor(t.entryEpoch / 1000),
-            balance_after: ((res.body.balances || {}).demo || {}).totalCents / 100,
+            balance_after: ((res.body.balances || {})[mode] || {}).totalCents / 100,
             longcode: (t.contractType === 'CALL' ? 'Rise' : 'Fall') + ' ' + t.symbol,
             shortcode: t.id,
           },
         });
       });
+    });
+  }
+
+  // ---------------------------------------------------------------- contracts
+  /** A trades row in the shape `proposal_open_contract` subscribers expect. */
+  function contractView(t) {
+    var stake = t.stakeCents / 100;
+    var payout = t.payoutCents / 100;
+    var settled = t.status !== 'OPEN';
+    var profit = settled ? (t.profitCents || 0) / 100 : 0;
+    var entry = t.entrySpot;
+    var exit = t.exitSpot === null || t.exitSpot === undefined ? null : t.exitSpot;
+    return {
+      contract_id: t.id,
+      transaction_ids: { buy: t.id, sell: settled ? 'sell-' + t.id : undefined },
+      buy_price: stake,
+      payout,
+      profit,
+      profit_percentage: stake ? Number(((profit / stake) * 100).toFixed(2)) : 0,
+      contract_type: t.contractType,
+      symbol: t.symbol,
+      longcode: (t.contractType === 'CALL' ? 'Rise' : 'Fall') + ' in ' + t.symbol + ' for ' + t.durationTicks + ' ticks',
+      entry_spot: entry,
+      entry_tick: entry,
+      current_spot: settled ? exit : entry,
+      current_spot_time: Math.floor((t.settledAt || t.entryEpoch) / 1000),
+      exit_tick: exit,
+      status: settled ? t.status : 'open',
+      is_sold: settled ? 1 : 0,
+      is_valid_to_sell: 0,          // no early close on this platform
+      is_expired: settled ? 1 : 0,
+      purchase_time: Math.floor(t.entryEpoch / 1000),
+      sell_time: settled ? Math.floor((t.settledAt || t.expiryEpoch) / 1000) : undefined,
+      sell_price: settled ? (t.status === 'WON' ? payout : t.status === 'VOID' ? stake : 0) : 0,
+      date_start: Math.floor(t.entryEpoch / 1000),
+      date_expiry: t.expiryEpoch ? Math.floor(t.expiryEpoch / 1000) : undefined,
+      tick_count: t.durationTicks,
+      tick_passed: settled ? t.durationTicks : Math.min(t.durationTicks - 1, Math.max(0, Math.round((Date.now() - t.entryEpoch) / TICK_MS))),
+      underlying: t.symbol,
+      mode: t.mode || 'demo',
+    };
+  }
+
+  /**
+   * `proposal_open_contract`: one row, then — if the client subscribed — one update per tick until
+   * the contract settles. Settlement happens on the server (lazily, when the trade is read), so this
+   * poll is also what moves the contract to WON/LOST and returns the payout to the wallet.
+   */
+  function streamOpenContract(socket, req) {
+    var id = req.contract_id;
+    // With no contract_id this is Deriv's "every open contract on my account" subscription, which
+    // is how the bot builder follows the contracts it buys until they settle.
+    if (!id) return streamAllContracts(socket, req);
+    var stop = function () {
+      var sub = socket._subs[req.req_id || id];
+      if (sub && sub.timer) clearInterval(sub.timer);
+      delete socket._subs[req.req_id || id];
+    };
+    var read = function () {
+      return api('/api/trades/' + encodeURIComponent(id)).then(function (r) {
+        if (!r.ok) {
+          stop();
+          return socket._deliver(errorFor(req, 'proposal_open_contract', r.body.code || 'ContractNotFound', r.body.error || 'Unknown contract.'));
+        }
+        var view = contractView(r.body.trade);
+        socket._deliver({ msg_type: 'proposal_open_contract', proposal_open_contract: view, echo_req: req, req_id: req.req_id });
+        if (view.is_sold) stop();
+        return view;
+      });
+    };
+    return read().then(function (view) {
+      if (!req.subscribe || !view || view.is_sold) return;
+      stats.subscriptions += 1;
+      var key = req.req_id || id;
+      if (socket._subs[key] && socket._subs[key].timer) clearInterval(socket._subs[key].timer);
+      socket._subs[key] = { kind: 'purchase', symbol: view.symbol, timer: setInterval(read, 1000) };
+    });
+  }
+
+  /**
+   * The account-wide open-contract feed: one message per contract that is open, plus one final
+   * message when it settles (that poll is also what settles it, since expiry is lazy).
+   */
+  function streamAllContracts(socket, req) {
+    var sold = {};
+    var tick = function () {
+      return api('/api/trades?limit=20&mode=' + modeOf(socket)).then(function (r) {
+        var list = r.body.trades || [];
+        for (var i = 0; i < list.length; i++) {
+          var t = list[i];
+          var view = contractView(t);
+          if (view.is_sold) {
+            if (sold[t.id]) continue;
+            sold[t.id] = true;
+            socket._deliver({ msg_type: 'proposal_open_contract', proposal_open_contract: view, echo_req: req, req_id: req.req_id });
+          } else {
+            socket._deliver({ msg_type: 'proposal_open_contract', proposal_open_contract: view, echo_req: req, req_id: req.req_id });
+          }
+        }
+        return Object.keys(sold).length >= list.length && list.length > 0;
+      });
+    };
+    return tick().then(function () {
+      if (!req.subscribe) return;
+      stats.subscriptions += 1;
+      var key = req.req_id || 'proposal_open_contract';
+      if (socket._subs[key] && socket._subs[key].timer) clearInterval(socket._subs[key].timer);
+      socket._subs[key] = { kind: 'contracts', timer: setInterval(tick, 1000) };
+    });
+  }
+
+  /** `transaction` stream: buys and settlements on the active account, newest last. */
+  function streamTransactions(socket, req) {
+    var seen = {};
+    var deliver = function (t, action, amount) {
+      socket._deliver({
+        msg_type: 'transaction', echo_req: req, req_id: req.req_id,
+        transaction: {
+          action, contract_id: t.id, transaction_id: t.id,
+          amount, balance: 0,
+          symbol: t.symbol, contract_type: t.contractType,
+          transaction_time: Math.floor((action === 'sell' ? (t.settledAt || t.expiryEpoch || t.entryEpoch) : t.entryEpoch) / 1000),
+          purchase_time: Math.floor(t.entryEpoch / 1000),
+          longcode: (t.contractType === 'CALL' ? 'Rise' : 'Fall') + ' in ' + t.symbol,
+          app_id: 36300, mode: t.mode || 'demo',
+        },
+      });
+    };
+    var poll = function () {
+      return api('/api/trades?limit=20&mode=' + modeOf(socket)).then(function (r) {
+        var list = (r.body.trades || []).slice().reverse();
+        for (var i = 0; i < list.length; i++) {
+          var t = list[i];
+          if (!seen[t.id]) { seen[t.id] = t.status; deliver(t, 'buy', t.stakeCents / 100); continue; }
+          if (seen[t.id] === 'OPEN' && t.status !== 'OPEN') { seen[t.id] = t.status; deliver(t, 'sell', (t.profitCents || 0) / 100); }
+        }
+      });
+    };
+    return poll().then(function () {
+      if (!req.subscribe) return;
+      stats.subscriptions += 1;
+      var key = req.req_id || 'transaction';
+      if (socket._subs[key] && socket._subs[key].timer) clearInterval(socket._subs[key].timer);
+      socket._subs[key] = { kind: 'transaction', timer: setInterval(poll, TICK_MS) };
     });
   }
 

@@ -117,7 +117,7 @@ function loadSummary(options = {}) {
         console,
         setTimeout
     });
-    return { api: window.NovaTrade KESessionSummary, document };
+    return { api: window.NTSessionSummary, document };
 }
 
 function makeStatTiles(document, values) {

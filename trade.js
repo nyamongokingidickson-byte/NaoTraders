@@ -60,11 +60,32 @@
       selectMarket(state.symbols[0].code);
     }
 
+    applyAccountMode();
+    document.addEventListener('nt:account-changed', applyAccountMode);
+
     await refreshTrades();
     state.timer = setInterval(tick, 2000);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') tick();
     });
+  }
+
+  // The header switcher selects demo or real. This page can only trade demo today: the real wallet
+  // exists but is unfunded because the cashier is not switched on, so it says so instead of quietly
+  // booking a "real" trade against demo money.
+  function applyAccountMode() {
+    const account = (() => {
+      try { return localStorage.getItem('nt:active-account') === 'real' ? 'real' : 'demo'; } catch { return 'demo'; }
+    })();
+    const real = account === 'real';
+    const warn = $('#realWarn');
+    if (warn) warn.hidden = !real;
+    const place = $('#place');
+    if (place) {
+      place.disabled = real;
+      place.textContent = real ? 'Deposits not available yet' : (state.type === 'CALL' ? 'Rise' : 'Fall');
+      place.title = real ? 'Real account has no funds — deposits are not available yet' : '';
+    }
   }
 
   function renderBalances(balances) {

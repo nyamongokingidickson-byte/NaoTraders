@@ -70,6 +70,14 @@
   }
 
   // ---------------------------------------------------------------- http
+  // The mirror app boots from localStorage, and clears any cookie it does not recognise, so the
+  // account list travels in the sign-in response and is persisted here before we leave the page.
+  function rememberClient(payload) {
+    try {
+      if (payload && payload.client) localStorage.setItem('nt:client', JSON.stringify(payload.client));
+    } catch { /* private mode */ }
+  }
+
   async function api(path, body, method = 'POST') {
     const res = await fetch(path, {
       method,
@@ -166,7 +174,7 @@
     const btn = $('#loginSubmit');
     setBusy(btn, true, 'Signing in…');
     try {
-      await api('/api/auth/login', { email, password });
+      rememberClient(await api('/api/auth/login', { email, password }));
       store.del(KEY_RESET_TICKET);
       setBusy(btn, false);
       btn.textContent = 'Signed in — opening the platform…';
@@ -209,7 +217,7 @@
     const btn = $('#registerSubmit');
     setBusy(btn, true, 'Creating account…');
     try {
-      await api('/api/auth/register', { displayName, email, password, confirmPassword });
+      rememberClient(await api('/api/auth/register', { displayName, email, password, confirmPassword }));
       setBusy(btn, false, 'Account created');
       showDone({
         title: 'Account created',

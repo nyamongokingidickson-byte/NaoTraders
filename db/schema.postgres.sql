@@ -142,3 +142,8 @@ CREATE INDEX IF NOT EXISTS audit_created ON audit_log(created_at DESC);
 CREATE OR REPLACE VIEW ledger_unbalanced AS
   SELECT txn_id, SUM(amount) AS signed_sum
   FROM entries GROUP BY txn_id HAVING SUM(amount) <> 0;
+
+-- Every contract belongs to the wallet that paid for it: the virtual demo wallet, or the real
+-- ledger wallet. Added after the table existed, hence the ALTER for live databases.
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'demo';
+CREATE INDEX IF NOT EXISTS trades_user_mode ON trades(user_id, mode, opened_at DESC);
