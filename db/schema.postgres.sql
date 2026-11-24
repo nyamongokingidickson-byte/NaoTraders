@@ -25,26 +25,6 @@ CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 
 -- ---------------------------------------------------------------- registration / reset
-CREATE TABLE IF NOT EXISTS pending_users (
-  email         TEXT PRIMARY KEY,
-  password_hash TEXT NOT NULL,
-  display_name  TEXT NOT NULL,
-  created_at    BIGINT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS email_otps (
-  id           TEXT PRIMARY KEY,
-  email        TEXT NOT NULL,
-  purpose      TEXT NOT NULL CHECK (purpose IN ('register','reset')),
-  code_hash    TEXT NOT NULL,
-  attempts     INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 5,
-  sends        INTEGER NOT NULL DEFAULT 1,
-  created_at   BIGINT NOT NULL,
-  expires_at   BIGINT NOT NULL,
-  last_sent_at BIGINT NOT NULL,
-  consumed_at  BIGINT
-);
 CREATE INDEX IF NOT EXISTS email_otps_lookup ON email_otps(email, purpose, consumed_at);
 
 CREATE TABLE IF NOT EXISTS reset_tickets (

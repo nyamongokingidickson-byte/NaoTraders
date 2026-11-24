@@ -80,20 +80,9 @@ route('GET', '/healthz', async (req, res) => {
 // ---------------------------------------------------------------- auth
 route('POST', '/api/auth/register', async (req, res) => {
   const body = await readBody(req);
-  const result = await accounts.registerStart({ ...body, ip: clientIp(req) });
-  ok(res, { step: 'verify', ...result, message: 'We sent a 6-digit code to your email. Enter it below to activate your account.' });
-});
-
-route('POST', '/api/auth/register/verify', async (req, res) => {
-  const body = await readBody(req);
-  const { token, user, expiresAt } = await accounts.registerVerify({ email: body.email, code: body.code, ip: clientIp(req) });
-  send(res, 200, { ok: true, user, wallet: await store.walletFor(user.id), accounts: accountInfo(user), expiresAt },
+  const { token, user, expiresAt } = await accounts.register({ ...body, ip: clientIp(req) });
+  send(res, 201, { ok: true, user, wallet: await store.walletFor(user.id), accounts: accountInfo(user), expiresAt },
     { 'set-cookie': cookieHeader(token, req) });
-});
-
-route('POST', '/api/auth/register/resend', async (req, res) => {
-  const body = await readBody(req);
-  ok(res, { ...(await accounts.registerResend({ email: body.email })), message: 'A new code is on its way.' });
 });
 
 route('POST', '/api/auth/login', async (req, res) => {
@@ -116,12 +105,7 @@ route('POST', '/api/auth/logout-all', async (req, res) => {
 
 route('POST', '/api/auth/forgot-password', async (req, res) => {
   const body = await readBody(req);
-  ok(res, { step: 'verify', ...(await accounts.requestPasswordReset({ email: body.email, ip: clientIp(req) })) });
-});
-
-route('POST', '/api/auth/reset/verify', async (req, res) => {
-  const body = await readBody(req);
-  ok(res, { step: 'new-password', ...(await accounts.verifyResetCode({ email: body.email, code: body.code })) });
+  ok(res, await accounts.requestPasswordReset({ email: body.email, ip: clientIp(req) }));
 });
 
 route('POST', '/api/auth/reset/complete', async (req, res) => {

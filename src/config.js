@@ -35,6 +35,10 @@ export const config = {
   root: ROOT,
   port: Number(env.PORT || 4173),
   env: env.NODE_ENV || 'development',
+  // Base URL used to build links in email. Falls back to the deployment's own domain.
+  appUrl: (env.APP_URL
+    || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : '')
+    || 'https://novatradeke001.vercel.app').replace(/\/+$/, ''),
   publicUrl: env.APP_URL || '',
   dbFile: env.DB_FILE || path.join(ROOT, 'data', 'platform.db'),
 
@@ -107,13 +111,9 @@ export const config = {
     resendApiKey: env.RESEND_API_KEY || '',
   },
 
-  otp: {
-    length: 6,
-    ttlMs: Number(env.OTP_TTL_MS || 5 * 60 * 1000),        // 5 minutes
-    resendCooldownMs: Number(env.OTP_RESEND_MS || 60 * 1000), // 60 seconds
-    maxAttempts: Number(env.OTP_MAX_ATTEMPTS || 5),
-    maxSends: Number(env.OTP_MAX_SENDS || 5),
-    resetTicketTtlMs: Number(env.RESET_TICKET_TTL_MS || 15 * 60 * 1000),
+  // Password reset is link-based: the emailed link carries a single-use ticket.
+  reset: {
+    ticketTtlMs: Number(env.RESET_TICKET_TTL_MS || 30 * 60 * 1000), // 30 minutes
   },
 
   security: {

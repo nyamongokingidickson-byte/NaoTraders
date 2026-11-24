@@ -102,50 +102,6 @@ export async function deleteUserSessions(userId) {
 }
 
 // ---------------------------------------------------------------- pending registrations
-export async function upsertPending({ email, passwordHash, displayName }) {
-  await many(`INSERT INTO pending_users(email,password_hash,display_name,created_at) VALUES($1,$2,$3,$4)
-    ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash, display_name=EXCLUDED.display_name, created_at=EXCLUDED.created_at`,
-    [email, passwordHash, displayName, now()]);
-}
-
-export async function getPending(email) {
-  return one('SELECT * FROM pending_users WHERE email=$1', [email]);
-}
-
-export async function deletePending(email) {
-  await many('DELETE FROM pending_users WHERE email=$1', [email]);
-}
-
-// ---------------------------------------------------------------- email OTPs
-export async function activeOtp(email, purpose) {
-  return one(`SELECT * FROM email_otps WHERE email=$1 AND purpose=$2 AND consumed_at IS NULL
-    ORDER BY created_at DESC LIMIT 1`, [email, purpose]);
-}
-
-export async function previousSendCount(email, purpose) {
-  const row = await one('SELECT sends FROM email_otps WHERE email=$1 AND purpose=$2 ORDER BY created_at DESC LIMIT 1', [email, purpose]);
-  return row ? row.sends : 0;
-}
-
-export async function replaceOtp({ id, email, purpose, codeHash, maxAttempts, sends, ttlMs }) {
-  const t = now();
-  await tx(async (c) => {
-    await c.query('UPDATE email_otps SET consumed_at=$1 WHERE email=$2 AND purpose=$3 AND consumed_at IS NULL', [t, email, purpose]);
-    await c.query(`INSERT INTO email_otps(id,email,purpose,code_hash,attempts,max_attempts,sends,created_at,expires_at,last_sent_at)
-      VALUES($1,$2,$3,$4,0,$5,$6,$7,$8,$7)`, [id, email, purpose, codeHash, maxAttempts, sends, t, t + ttlMs]);
-  });
-  return { expiresAt: t + ttlMs };
-}
-
-export async function consumeOtp(id) {
-  await many('UPDATE email_otps SET consumed_at=$1 WHERE id=$2', [now(), id]);
-}
-
-export async function recordOtpFailure(id, attempts, exhausted) {
-  await many('UPDATE email_otps SET attempts=$1, consumed_at=$2 WHERE id=$3', [attempts, exhausted ? now() : null, id]);
-}
-
-// ---------------------------------------------------------------- reset tickets
 export async function createResetTicket({ tokenHash, userId, email, ttlMs }) {
   const t = now();
   await many('INSERT INTO reset_tickets(token_hash,user_id,email,created_at,expires_at) VALUES($1,$2,$3,$4,$5)',

@@ -14,13 +14,11 @@ export const outboxLength = () => outbox.length;
 
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-export function renderOtpEmail({ purpose, code, name, expiresMinutes }) {
-  const isReset = purpose === 'reset';
-  const title = isReset ? 'Reset your password' : 'Verify your email address';
-  const lead = isReset
-    ? 'We received a request to reset the password for your NovaTrade KE account. Enter this code to choose a new password.'
-    : `Welcome to NovaTrade KE. Enter this code to finish creating your account${name ? `, ${esc(name.split(' ')[0])}` : ''}.`;
-  const cta = isReset ? 'Reset password' : 'Verify email';
+export function renderResetEmail({ name, link, expiresMinutes }) {
+  const title = 'Reset your password';
+  const lead = 'We received a request to reset the password for your NovaTrade KE account.'
+    + `${name ? ` Click the button below to choose a new password, ${esc(name.split(' ')[0])}.` : ' Click the button below to choose a new password.'}`;
+  const safeLink = esc(link);
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title></head>
@@ -33,54 +31,25 @@ export function renderOtpEmail({ purpose, code, name, expiresMinutes }) {
       <h1 style="margin:12px 0 0;font-size:22px;line-height:1.3;color:#f1f5ff;font-weight:700;">${title}</h1>
     </td></tr>
     <tr><td style="padding:12px 28px 0;color:#a9b6d0;font-size:15px;line-height:1.6;">${lead}</td></tr>
-    <tr><td align="center" style="padding:24px 28px 8px;">
-      <div style="background:#0b1020;border:1px dashed #3b82f6;border-radius:12px;padding:20px 12px;">
-        <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:34px;letter-spacing:12px;font-weight:700;color:#f1f5ff;padding-left:12px;">${esc(code)}</div>
-      </div>
-      <div style="color:#7f8eb0;font-size:12px;padding-top:10px;">This code expires in ${expiresMinutes} minutes.</div>
+    <tr><td align="center" style="padding:26px 28px 6px;">
+      <a href="${safeLink}" style="display:inline-block;background:#3b82f6;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:14px 26px;border-radius:10px;">Choose a new password</a>
+      <div style="color:#7f8eb0;font-size:12px;padding-top:12px;">This link expires in ${expiresMinutes} minutes and can be used once.</div>
     </td></tr>
-    <tr><td style="padding:12px 28px 0;color:#a9b6d0;font-size:14px;line-height:1.6;">
-      <strong style="color:#f1f5ff;">How to ${cta.toLowerCase()}:</strong>
-      <ol style="margin:8px 0 0;padding-left:20px;color:#a9b6d0;">
-        <li>Return to the NovaTrade KE sign-in page.</li>
-        <li>Enter the 6-digit code above exactly as shown.</li>
-        <li>${isReset ? 'Choose a new password of at least 8 characters.' : 'Complete verification to activate your account.'}</li>
-      </ol>
-    </td></tr>
-    <tr><td style="padding:20px 28px 0;color:#7f8eb0;font-size:13px;line-height:1.6;">
-      For your security this code can be used once and cannot be reissued before the resend cooldown.
-      If you did not request this, you can ignore this email — your account is unchanged.
-    </td></tr>
-    <tr><td style="padding:22px 28px 26px;">
-      <div style="border-top:1px solid #22304d;padding-top:16px;color:#63729a;font-size:12px;line-height:1.6;">
-        NovaTrade KE · Nairobi, Kenya<br>
-        Need help? Reply to this email or contact ${esc(config.email.replyTo)}.<br>
-        Never share this code with anyone — our team will never ask for it.
-      </div>
+    <tr><td style="padding:18px 28px 28px;color:#7f8eb0;font-size:12px;line-height:1.6;border-top:1px solid #22304d;">
+      If the button does not work, copy this link into your browser:<br>
+      <span style="color:#a9b6d0;word-break:break-all;">${safeLink}</span>
+      <br><br>If you did not request this, you can ignore this email — your password will not change.
     </td></tr>
   </table>
-  <div style="color:#4a577a;font-size:11px;padding-top:16px;">This is an automated message.</div>
-</td></tr></table>
+  <div style="color:#5b6c8f;font-size:11px;padding-top:16px;">NovaTrade KE — demo platform. No real money is handled.</div>
+</td></tr>
+</table>
 </body></html>`;
 
-  const text = [
-    `NovaTrade KE — ${title}`,
-    '',
-    lead.replace(/<[^>]+>/g, ''),
-    '',
-    `   ${code}`,
-    '',
-    `This code expires in ${expiresMinutes} minutes and can be used once.`,
-    `How to ${cta.toLowerCase()}: return to the sign-in page, enter the code, then continue.`,
-    '',
-    'If you did not request this, ignore this email — your account is unchanged.',
-    `Never share this code. Support: ${config.email.replyTo}`,
-    'NovaTrade KE · Nairobi, Kenya',
-  ].join('\n');
+  const text = `Reset your NovaTrade KE password\n\n${lead.replace(/<[^>]+>/g, '')}\n\nOpen this link to choose a new password:\n${link}\n\nThis link expires in ${expiresMinutes} minutes and can be used once.\nIf you did not request this, ignore this email.\n`;
 
-  return { subject: `${title} — NovaTrade KE (code ${code.slice(0, 2)}••••)`.replace(/code \d\d••••/, 'your verification code'), html, text, title };
+  return { subject: 'Reset your NovaTrade KE password', html, text };
 }
-
 function buildMime({ to, subject, html, text, messageId }) {
   const boundary = `nt_${crypto.randomBytes(8).toString('hex')}`;
   return [
@@ -111,7 +80,7 @@ function buildMime({ to, subject, html, text, messageId }) {
 
 /**
  * Send an email. Throws if the transport is misconfigured — a silent failure here would
- * leave a user stuck on an OTP screen with no code.
+ * leave a user stuck waiting on a message that never arrives.
  */
 export async function sendMail({ to, subject, html, text, tag = 'mail' }) {
   const messageId = `${crypto.randomUUID()}@novatrade.ke`;

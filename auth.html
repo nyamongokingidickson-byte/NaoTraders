@@ -51,7 +51,7 @@
     <!-- ---------------------------------------------------------------- REGISTER -->
     <section class="view" data-view="register">
       <h1>Create your account</h1>
-      <p class="sub">We'll email a 6-digit code to verify your address.</p>
+      <p class="sub">You'll be signed in as soon as your account is created.</p>
       <form id="registerForm" novalidate>
         <label class="field">
           <span>Full name</span>
@@ -86,63 +86,25 @@
       <p class="switch">Already registered? <a href="/login">Sign in</a></p>
     </section>
 
-    <!-- ---------------------------------------------------------------- VERIFY (register) -->
-    <section class="view" data-view="verify">
-      <h1>Check your email</h1>
-      <p class="sub">We sent a 6-digit code to <strong id="verifyEmail" class="email-chip">—</strong>. It expires in 5 minutes.</p>
-      <form id="verifyForm" novalidate>
-        <label class="field">
-          <span>Verification code</span>
-          <input id="verifyCode" class="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" placeholder="000000" required />
-          <em class="err" data-err="code"></em>
-        </label>
-        <button class="primary" type="submit" id="verifySubmit">Verify and activate</button>
-      </form>
-      <div class="resend-row">
-        <button class="link" id="resendBtn" type="button" disabled>Resend code<span id="resendTimer"></span></button>
-        <a class="link" href="/register" id="changeEmail">Use a different email</a>
-      </div>
-      <p class="hint" id="devOutboxHint" hidden></p>
-    </section>
-
     <!-- ---------------------------------------------------------------- FORGOT -->
     <section class="view" data-view="forgot">
       <h1>Forgot your password?</h1>
-      <p class="sub">Enter the email on your account and we'll send a 6-digit reset code.</p>
+      <p class="sub">Enter the email on your account and we'll send you a link to set a new password.</p>
       <form id="forgotForm" novalidate>
         <label class="field">
           <span>Email address</span>
           <input id="forgotEmail" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
           <em class="err" data-err="email"></em>
         </label>
-        <button class="primary" type="submit" id="forgotSubmit">Send reset code</button>
+        <button class="primary" type="submit" id="forgotSubmit">Send reset link</button>
       </form>
       <p class="switch">Remembered it? <a href="/login">Back to sign in</a></p>
-    </section>
-
-    <!-- ---------------------------------------------------------------- RESET OTP -->
-    <section class="view" data-view="reset-code">
-      <h1>Enter your reset code</h1>
-      <p class="sub">We sent a 6-digit code to <strong id="resetEmail" class="email-chip">—</strong>. It expires in 5 minutes.</p>
-      <form id="resetCodeForm" novalidate>
-        <label class="field">
-          <span>Reset code</span>
-          <input id="resetCode" class="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" placeholder="000000" required />
-          <em class="err" data-err="code"></em>
-        </label>
-        <button class="primary" type="submit" id="resetCodeSubmit">Continue</button>
-      </form>
-      <div class="resend-row">
-        <button class="link" id="resetResendBtn" type="button" disabled>Resend code<span id="resetResendTimer"></span></button>
-        <a class="link" href="/forgot-password">Use a different email</a>
-      </div>
-      <p class="hint" id="resetDevHint" hidden></p>
     </section>
 
     <!-- ---------------------------------------------------------------- NEW PASSWORD -->
     <section class="view" data-view="reset-password">
       <h1>Choose a new password</h1>
-      <p class="sub">Your code was verified. Pick a new password — this signs you out on every device.</p>
+      <p class="sub">Pick a new password — this signs you out on every device.</p>
       <form id="newPasswordForm" novalidate>
         <label class="field">
           <span>New password</span>

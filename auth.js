@@ -1,4 +1,4 @@
-// Account UI: login, registration with emailed OTP, password reset with OTP.
+// Account UI: login, registration (activated immediately) and link-based password reset.
 // All validation is mirrored server-side — nothing here is trusted.
 (() => {
   'use strict';
@@ -9,16 +9,16 @@
   const PATHS = {
     login: '/login',
     register: '/register',
-    verify: '/verify-email',
     forgot: '/forgot-password',
-    'reset-code': '/reset-password',
     'reset-password': '/reset-password',
     done: '/login',
   };
   const FROM_PATH = {
-    '/login': 'login', '/register': 'register', '/verify-email': 'verify',
-    '/forgot-password': 'forgot', '/reset-password': 'reset-flow', '/auth': 'login',
+    '/login': 'login', '/register': 'register', '/forgot-password': 'forgot',
+    '/reset-password': 'reset-password', '/auth': 'login',
   };
+
+  const KEY_RESET_TICKET = 'nt_reset_ticket';
 
   const store = {
     get: (k) => { try { return sessionStorage.getItem(k) || ''; } catch { return ''; } },
@@ -26,8 +26,15 @@
     del: (k) => { try { sessionStorage.removeItem(k); } catch {} },
   };
 
+  // The reset link carries the ticket as ?token=…; keep it across reloads, then drop it from view.
+  const urlToken = new URLSearchParams(location.search).get('token');
+  if (urlToken) {
+    store.set(KEY_RESET_TICKET, urlToken);
+    try { history.replaceState({ view: 'reset-password' }, '', '/reset-password?token=' + urlToken); } catch {}
+  }
+  const resetTicket = () => urlToken || store.get(KEY_RESET_TICKET);
+
   let currentView = 'login';
-  let resendTimer = null;
 
   // ---------------------------------------------------------------- dom helpers
   function setAlert(message, kind = 'err', html = '') {
@@ -88,7 +95,7 @@
     currentView = name;
     $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === name));
     document.title = `NovaTrade KE — ${title || labelFor(name)}`;
-    if (push && PATHS[name]) {
+    if (push && PATHS[name] && name !== 'reset-password') {
       const target = PATHS[name];
       if (location.pathname !== target) history.pushState({ view: name }, '', target);
     }
@@ -100,51 +107,22 @@
   }
 
   const labelFor = (v) => ({
-    login: 'Sign in', register: 'Create account', verify: 'Verify email',
-    forgot: 'Reset password', 'reset-code': 'Enter reset code', 'reset-password': 'New password', done: 'Done',
+    login: 'Sign in', register: 'Create account', forgot: 'Reset password',
+    'reset-password': 'New password', done: 'Done',
   }[v] || 'Account');
 
   function resolveInitialView() {
     const base = FROM_PATH[location.pathname.replace(/\/$/, '') || '/login'] || 'login';
-    if (base === 'reset-flow') {
-      if (store.get('nt_reset_ticket')) return 'reset-password';
-      if (store.get('nt_reset_email')) return 'reset-code';
-      return 'forgot';
-    }
-    if (base === 'verify' && !store.get('nt_reg_email')) return 'register';
+    // A reset page without a ticket cannot do anything — send them to request a link.
+    if (base === 'reset-password' && !resetTicket()) return 'forgot';
     return base;
   }
 
-  // ---------------------------------------------------------------- resend cooldown
-  function startResend(button, timerEl, seconds, onExpire) {
-    clearInterval(resendTimer);
-    let left = Math.max(0, Math.ceil(seconds));
-    const label = button.dataset.label || button.textContent.replace(/\s*\(\d+s\)$/, '');
-    button.dataset.label = label;
-    if (left <= 0) {
-      button.disabled = false;
-      if (timerEl) timerEl.textContent = '';
-      return;
-    }
-    button.disabled = true;
-    if (timerEl) timerEl.textContent = ` (${left}s)`;
-    resendTimer = setInterval(() => {
-      left -= 1;
-      if (left <= 0) {
-        clearInterval(resendTimer);
-        button.disabled = false;
-        if (timerEl) timerEl.textContent = '';
-        onExpire?.();
-      } else if (timerEl) timerEl.textContent = ` (${left}s)`;
-    }, 1000);
-  }
-
-  function showDevHint(el, transport) {
-    if (!el) return;
-    if (transport !== 'console') { el.hidden = true; return; }
-    el.hidden = false;
-    el.innerHTML = 'Development mode: no mail server is configured, so the message is written to the server outbox. ' +
-      '<a href="/api/dev/outbox" target="_blank" rel="noopener">View outbox</a>';
+  function showDone({ title, message, cta }) {
+    $('#doneTitle').textContent = title;
+    $('#doneMessage').textContent = message;
+    $('#doneCta').textContent = cta;
+    showView('done');
   }
 
   // ---------------------------------------------------------------- password meter
@@ -175,16 +153,6 @@
     });
   });
 
-  // ---------------------------------------------------------------- OTP input hygiene
-  $$('.otp').forEach((input) => {
-    input.addEventListener('input', () => {
-      input.value = input.value.replace(/\D/g, '').slice(0, 6);
-    });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') input.closest('form')?.requestSubmit();
-    });
-  });
-
   // ---------------------------------------------------------------- LOGIN
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -198,8 +166,8 @@
     const btn = $('#loginSubmit');
     setBusy(btn, true, 'Signing in…');
     try {
-      const data = await api('/api/auth/login', { email, password });
-      store.del('nt_reg_email'); store.del('nt_reset_email'); store.del('nt_reset_ticket');
+      await api('/api/auth/login', { email, password });
+      store.del(KEY_RESET_TICKET);
       setBusy(btn, false);
       btn.textContent = 'Signed in — opening dashboard…';
       location.replace('/');
@@ -215,12 +183,6 @@
           ? `Incorrect password. Please try again. ${err.attemptsLeft} attempt${err.attemptsLeft === 1 ? '' : 's'} left before a short lockout.`
           : 'Incorrect password. Please try again.');
         $('#loginPassword').select();
-      } else if (err.code === 'ACCOUNT_UNVERIFIED') {
-        store.set('nt_reg_email', email);
-        setAlert('That account is not verified yet. Check your email for the 6-digit code.', 'info');
-        setTimeout(() => showView('verify'), 900);
-      } else if (err.code === 'RATE_LIMITED') {
-        setAlert(err.message);
       } else {
         setAlert(err.message);
       }
@@ -245,23 +207,21 @@
     if (bad) return;
 
     const btn = $('#registerSubmit');
-    setBusy(btn, true, 'Sending code…');
+    setBusy(btn, true, 'Creating account…');
     try {
-      const data = await api('/api/auth/register', { displayName, email, password, confirmPassword });
-      store.set('nt_reg_email', data.email || email);
-      setBusy(btn, false);
-      $('#verifyEmail').textContent = store.get('nt_reg_email');
-      $('#verifyCode').value = '';
-      showView('verify');
-      setAlert('We sent a 6-digit code to your email. It expires in 5 minutes.', 'ok');
-      startResend($('#resendBtn'), $('#resendTimer'), Math.ceil((data.resendAfterMs || 60000) / 1000));
-      showDevHint($('#devOutboxHint'), data.transport);
-      setTimeout(() => $('#verifyCode').focus(), 120);
+      await api('/api/auth/register', { displayName, email, password, confirmPassword });
+      setBusy(btn, false, 'Account created');
+      showDone({
+        title: 'Account created',
+        message: 'You are signed in and your account is ready. Opening your dashboard…',
+        cta: 'Go to dashboard',
+      });
+      setTimeout(() => location.replace('/'), 900);
     } catch (err) {
       setBusy(btn, false);
       if (err.code === 'ALREADY_REGISTERED') {
         fieldError('email', 'That email is already registered.');
-        setAlert('An account with this email already exists. <a href="/login">Sign in instead</a> — or reset your password if you have forgotten it.', 'err');
+        setAlert('An account with this email already exists. <a href="/login">Sign in instead</a> — or <a href="/forgot-password">reset your password</a> if you have forgotten it.', 'err');
       } else if (err.code === 'WEAK_PASSWORD') { fieldError('password', err.message); setAlert(err.message); }
       else if (err.code === 'PASSWORD_MISMATCH') { fieldError('confirmPassword', err.message); setAlert(err.message); }
       else if (err.code === 'INVALID_NAME') { fieldError('displayName', err.message); setAlert(err.message); }
@@ -270,68 +230,7 @@
     }
   });
 
-  // ---------------------------------------------------------------- VERIFY (register)
-  $('#verifyForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearAlert(); clearFieldErrors();
-    const email = store.get('nt_reg_email');
-    const code = $('#verifyCode').value.trim();
-    if (!email) { setAlert('Start again — we lost track of that email.'); return showView('register'); }
-    if (code.length !== 6) return fieldError('code', 'Enter the 6-digit code.');
-
-    const btn = $('#verifySubmit');
-    setBusy(btn, true, 'Verifying…');
-    try {
-      await api('/api/auth/register/verify', { email, code });
-      store.del('nt_reg_email');
-      setBusy(btn, false, 'Activated');
-      $('#doneTitle').textContent = 'Account activated';
-      $('#doneMessage').textContent = 'Your email is verified and your account is ready. Opening your dashboard…';
-      $('#doneCta').textContent = 'Go to dashboard';
-      showView('done');
-      setTimeout(() => location.replace('/'), 900);
-    } catch (err) {
-      setBusy(btn, false);
-      if (err.code === 'OTP_INVALID') fieldError('code', err.message);
-      else if (err.code === 'OTP_EXPIRED' || err.code === 'OTP_ATTEMPTS_EXCEEDED' || err.code === 'OTP_NOT_FOUND') {
-        fieldError('code', err.message);
-        $('#resendBtn').disabled = false;
-      } else if (err.code === 'OTP_COOLDOWN') { setAlert(err.message, 'info'); startResend($('#resendBtn'), $('#resendTimer'), Math.ceil((err.retryAfterMs || 60000) / 1000)); }
-      setAlert(`${err.message}`, err.code === 'OTP_COOLDOWN' ? 'info' : 'err');
-    }
-  });
-
-  $('#resendBtn').addEventListener('click', async () => {
-    const email = store.get('nt_reg_email');
-    if (!email) return showView('register');
-    const btn = $('#resendBtn');
-    setBusy(btn, true, 'Sending…');
-    try {
-      const data = await api('/api/auth/register/resend', { email });
-      btn.dataset.label = 'Resend code';
-      setBusy(btn, false);
-      setAlert('A new code is on its way. The previous code no longer works.', 'ok');
-      startResend(btn, $('#resendTimer'), Math.ceil((data.resendAfterMs || 60000) / 1000));
-      showDevHint($('#devOutboxHint'), data.transport);
-    } catch (err) {
-      setBusy(btn, false);
-      if (err.code === 'OTP_COOLDOWN') {
-        startResend(btn, $('#resendTimer'), Math.ceil((err.retryAfterMs || 60000) / 1000));
-        setAlert(err.message, 'info');
-      } else if (err.code === 'NO_PENDING_REGISTRATION') {
-        setAlert('That registration expired. Please sign up again.', 'err');
-        setTimeout(() => showView('register'), 1200);
-      } else setAlert(err.message);
-    }
-  });
-
-  $('#changeEmail').addEventListener('click', (e) => {
-    e.preventDefault();
-    store.del('nt_reg_email');
-    showView('register');
-  });
-
-  // ---------------------------------------------------------------- FORGOT
+  // ---------------------------------------------------------------- FORGOT (emails a link)
   $('#forgotForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     clearAlert(); clearFieldErrors();
@@ -342,58 +241,12 @@
     setBusy(btn, true, 'Sending…');
     try {
       const data = await api('/api/auth/forgot-password', { email });
-      store.set('nt_reset_email', email);
-      store.del('nt_reset_ticket');
       setBusy(btn, false);
-      $('#resetEmail').textContent = email;
-      $('#resetCode').value = '';
-      showView('reset-code');
-      setAlert(data.message || 'If that email is registered, we sent a 6-digit code.', 'info');
-      startResend($('#resetResendBtn'), $('#resetResendTimer'), 60);
-      setTimeout(() => $('#resetCode').focus(), 120);
-    } catch (err) {
-      setBusy(btn, false);
-      setAlert(err.message);
-    }
-  });
-
-  // ---------------------------------------------------------------- RESET: verify code
-  $('#resetCodeForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearAlert(); clearFieldErrors();
-    const email = store.get('nt_reset_email');
-    const code = $('#resetCode').value.trim();
-    if (!email) return showView('forgot');
-    if (code.length !== 6) return fieldError('code', 'Enter the 6-digit code.');
-
-    const btn = $('#resetCodeSubmit');
-    setBusy(btn, true, 'Checking…');
-    try {
-      const data = await api('/api/auth/reset/verify', { email, code });
-      store.set('nt_reset_ticket', data.ticket);
-      setBusy(btn, false);
-      showView('reset-password');
-      setAlert('Code verified. Choose a new password below.', 'ok');
-    } catch (err) {
-      setBusy(btn, false);
-      fieldError('code', err.message);
-      if (err.code === 'OTP_EXPIRED' || err.code === 'OTP_ATTEMPTS_EXCEEDED' || err.code === 'OTP_NOT_FOUND') $('#resetResendBtn').disabled = false;
-      setAlert(err.message, err.code === 'OTP_COOLDOWN' ? 'info' : 'err');
-    }
-  });
-
-  $('#resetResendBtn').addEventListener('click', async () => {
-    const email = store.get('nt_reset_email');
-    if (!email) return showView('forgot');
-    const btn = $('#resetResendBtn');
-    setBusy(btn, true, 'Sending…');
-    try {
-      const data = await api('/api/auth/forgot-password', { email });
-      btn.dataset.label = 'Resend code';
-      setBusy(btn, false);
-      setAlert(data.message || 'If that email is registered, we sent a new code.', 'info');
-      startResend(btn, $('#resetResendTimer'), 60);
-      showDevHint($('#resetDevHint'), 'console');
+      showDone({
+        title: 'Check your email',
+        message: data.message || 'If that email is registered, we have sent a password reset link. It expires in 30 minutes.',
+        cta: 'Back to sign in',
+      });
     } catch (err) {
       setBusy(btn, false);
       setAlert(err.message);
@@ -404,10 +257,10 @@
   $('#newPasswordForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     clearAlert(); clearFieldErrors();
-    const ticket = store.get('nt_reset_ticket');
+    const ticket = resetTicket();
     const password = $('#newPassword').value;
     const confirmPassword = $('#newConfirm').value;
-    if (!ticket) { setAlert('Your reset session expired. Please request a new code.', 'err'); return showView('forgot'); }
+    if (!ticket) { setAlert('That reset link is missing its token. Please request a new link.'); return showView('forgot'); }
 
     let bad = false;
     if (password.length < 8) { fieldError('password', 'Password must be at least 8 characters.'); bad = true; }
@@ -419,19 +272,20 @@
     setBusy(btn, true, 'Updating…');
     try {
       const data = await api('/api/auth/reset/complete', { ticket, password, confirmPassword });
-      store.del('nt_reset_ticket'); store.del('nt_reset_email');
+      store.del(KEY_RESET_TICKET);
       setBusy(btn, false);
-      $('#doneTitle').textContent = 'Password updated';
-      $('#doneMessage').textContent = data.message || 'Your password has been changed and all devices were signed out.';
-      $('#doneCta').textContent = 'Sign in with your new password';
-      showView('done');
+      showDone({
+        title: 'Password updated',
+        message: data.message || 'Your password has been changed and all devices were signed out.',
+        cta: 'Sign in with your new password',
+      });
     } catch (err) {
       setBusy(btn, false);
       if (err.code === 'WEAK_PASSWORD') fieldError('password', err.message);
       else if (err.code === 'PASSWORD_MISMATCH') fieldError('confirmPassword', err.message);
       else if (err.code === 'PASSWORD_UNCHANGED') fieldError('password', err.message);
       if (err.code === 'RESET_TICKET_USED' || err.code === 'RESET_TICKET_EXPIRED' || err.code === 'RESET_TICKET_INVALID') {
-        store.del('nt_reset_ticket'); store.del('nt_reset_email');
+        store.del(KEY_RESET_TICKET);
         setAlert(err.message + ' Redirecting…');
         setTimeout(() => showView('forgot'), 1400);
       } else setAlert(err.message);
