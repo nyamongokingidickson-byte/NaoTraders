@@ -9,6 +9,12 @@
     "serve": "serve -s . -l 3000"
   },
   "dependencies": {
+    "nodemailer": "^6.9.16",
+    "pg": "^8.13.1",
     "serve": "^14.2.4"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
   }
 }

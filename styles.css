@@ -1,0 +1,92 @@
+:root{
+  --bg:#0b0d12; --panel:#131722; --panel2:#1a1f2e; --line:#232a3b;
+  --text:#e8ecf6; --muted:#8b94a8; --up:#10b981; --down:#ef4444; --accent:#7c3aed; --accent2:#a855f7;
+  --radius:12px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#1b1338 0%,var(--bg) 55%);color:var(--text);
+  font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+h3,h4{margin:0 0 12px;font-size:14px;letter-spacing:.02em;text-transform:uppercase;color:#cfd6e6}
+a{color:var(--accent2)}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 14px;background:var(--accent);color:#fff;font-weight:600}
+button:hover{filter:brightness(1.1)}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+button.rise{background:linear-gradient(180deg,#10b981,#059669)}
+button.fall{background:linear-gradient(180deg,#ef4444,#dc2626)}
+button:disabled{opacity:.45;cursor:not-allowed}
+
+.topbar{display:flex;align-items:center;gap:18px;padding:12px 20px;border-bottom:1px solid var(--line);
+  background:rgba(11,13,18,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+.brand{display:flex;align-items:center;gap:10px}
+.brand small{display:block;color:var(--muted);font-size:11px}
+.logo{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));font-weight:800}
+.tabs{display:flex;gap:6px;margin-left:12px}
+.tabs button{background:transparent;color:var(--muted);border:1px solid transparent;padding:8px 14px}
+.tabs button.active{color:#fff;background:var(--panel2);border-color:var(--line)}
+.who{margin-left:auto;display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px}
+.badge{background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:999px;
+  padding:2px 8px;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+
+main{padding:18px 20px 60px;max-width:1440px;margin:0 auto}
+.tab{display:none}
+.tab.active{display:block}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:16px}
+.trade-grid{display:grid;grid-template-columns:230px 1fr 300px;gap:16px;margin-bottom:16px}
+@media(max-width:1100px){.trade-grid{grid-template-columns:1fr}}
+
+.market-list{display:flex;flex-direction:column;gap:6px}
+.market-row{display:flex;justify-content:space-between;align-items:center;padding:9px 10px;border-radius:9px;
+  background:var(--panel2);cursor:pointer;border:1px solid transparent}
+.market-row:hover{border-color:var(--line)}
+.market-row.active{border-color:var(--accent);background:#1e1633}
+.market-row .sym{font-weight:600}
+.market-row .q{font-variant-numeric:tabular-nums;color:var(--muted)}
+.up{color:var(--up)} .down{color:var(--down)}
+
+.chartpanel{padding:12px}
+.chart-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.price{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.delta{font-size:13px;margin-left:6px}
+canvas{width:100%;display:block;border-radius:10px;background:linear-gradient(180deg,#0f1420,#0c1017)}
+
+.ticket label{display:block;margin-bottom:12px;color:var(--muted);font-size:12px}
+input,select{width:100%;margin-top:6px;padding:10px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--text);font:inherit}
+.payout-preview{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0 14px}
+.payout-preview div{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px}
+.payout-preview span{display:block;color:var(--muted);font-size:11px}
+.payout-preview strong{font-size:16px;font-variant-numeric:tabular-nums}
+.buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.hint{color:var(--muted);font-size:12px;margin-top:10px}
+.walletmini{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+.walletmini strong{display:block;color:var(--text);font-size:18px;font-variant-numeric:tabular-nums}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid rgba(35,42,59,.55);font-variant-numeric:tabular-nums}
+tr:hover td{background:rgba(124,58,237,.05)}
+.pill{padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line)}
+.pill.WON{color:var(--up);border-color:rgba(16,185,129,.4)}
+.pill.LOST{color:var(--down);border-color:rgba(239,68,68,.4)}
+.pill.OPEN,.pill.pending{color:#f59e0b;border-color:rgba(245,158,11,.4)}
+.pill.VOID{color:var(--muted)}
+.pill.settled,.pill.approved{color:var(--up);border-color:rgba(16,185,129,.4)}
+.pill.rejected{color:var(--down);border-color:rgba(239,68,68,.4)}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+.card small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.card strong{font-size:20px;font-variant-numeric:tabular-nums}
+.cashier-forms{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+@media(max-width:800px){.cashier-forms{grid-template-columns:1fr}}
+
+.gate{margin:12px 20px;padding:12px 16px;border-radius:10px;background:#2a1e0b;border:1px solid #6b4b0d;color:#fbbf24;font-size:12.5px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:grid;place-items:center;z-index:50}
+.modal-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;width:340px}
+.modal-card label{display:block;margin-bottom:12px;color:var(--muted);font-size:12px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);
+  border:1px solid var(--line);padding:12px 18px;border-radius:10px;z-index:60;max-width:520px;font-size:13px}
+.toast.err{border-color:#7f1d1d;color:#fca5a5}
+.toast.ok{border-color:#065f46;color:#6ee7b7}

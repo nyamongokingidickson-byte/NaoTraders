@@ -2,13 +2,30 @@
   "version": 2,
   "outputDirectory": ".",
   "cleanUrls": false,
-  "routes": [
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/login",
+      "destination": "/auth.html"
     },
     {
-      "src": "/.*",
-      "dest": "/index.html"
+      "source": "/register",
+      "destination": "/auth.html"
+    },
+    {
+      "source": "/verify-email",
+      "destination": "/auth.html"
+    },
+    {
+      "source": "/forgot-password",
+      "destination": "/auth.html"
+    },
+    {
+      "source": "/reset-password",
+      "destination": "/auth.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
