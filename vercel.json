@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "outputDirectory": ".",
   "cleanUrls": false,
   "rewrites": [
     {
