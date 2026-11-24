@@ -287,7 +287,7 @@
         checkRunControlTransition();
     }
 
-    window.NaoTradersSessionSummary = {
+    window.NovaTrade KESessionSummary = {
         show: showSummary,
         close: closeSummary,
         calculateDelta: calculateDelta

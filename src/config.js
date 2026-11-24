@@ -8,8 +8,8 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 function readExistingEnv() {
   const candidates = [
     process.env.EXISTING_ENV_FILE,
-    path.join(ROOT, '..', 'audit', 'NaoTraders-main', '.env'),
-    path.join(ROOT, '..', 'NaoTraders-main', '.env'),
+    path.join(ROOT, '..', 'audit', 'NovaTrade KE-main', '.env'),
+    path.join(ROOT, '..', 'NovaTrade KE-main', '.env'),
     path.join(ROOT, '.env'),
   ].filter(Boolean);
   for (const file of candidates) {

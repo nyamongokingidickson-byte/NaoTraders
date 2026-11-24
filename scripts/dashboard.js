@@ -1,5 +1,5 @@
 /**
- * NaoTraders Simulation Engine & Live WebSocket Interceptor
+ * NovaTrade KE Simulation Engine & Live WebSocket Interceptor
  * Intercepts WebSocket balance messages, Deriv balance updates,
  * and DOM balance renders to enforce simulated balances seamlessly.
  */

@@ -1,7 +1,7 @@
 {
-  "name": "naotraders",
+  "name": "NovaTrade KE",
   "version": "1.0.0",
-  "description": "Nao Traders",
+  "description": "NovaTrade KE",
   "scripts": {
     "build": "echo 'Static build ready'",
     "dev": "serve -s . -l 3000",
