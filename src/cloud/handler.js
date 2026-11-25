@@ -211,7 +211,11 @@ route('GET', '/api/trading/limits', async (req, res) =>
     realMoneyEnabled: config.gates.realMoneyEnabled,
     limits: trading.__limits(),
     payouts: await trading.payoutLadder(),
-    contractTypes: [{ code: 'CALL', name: 'Rise' }, { code: 'PUT', name: 'Fall' }],
+    contractTypes: trading.CONTRACT_TYPES.map((code) => ({ code, name: trading.CONTRACT_LABELS[code] || code })),
+    // Digit contracts are priced from the barrier, so the client asks for the multiplier it needs
+    // instead of re-deriving the house margin itself: "DIGITOVER:3" -> basis points of stake.
+    digitMultipliers: Object.fromEntries(trading.DIGIT_CONTRACT_TYPES.flatMap((t) =>
+      Array.from({ length: 10 }, (_, b) => [`${t}:${b}`, trading.digitMultiplierBp(t, b)]).filter(([, bp]) => bp))),
   }));
 
 route('POST', '/api/trades', async (req, res) => {
@@ -224,6 +228,7 @@ route('POST', '/api/trades', async (req, res) => {
     stakeCents: body.stakeCents !== undefined ? Number(body.stakeCents) : Math.round(Number(body.stake || 0) * 100),
     durationTicks: body.durationTicks !== undefined ? Number(body.durationTicks) : Number(body.duration),
     mode: body.mode === undefined ? 'demo' : String(body.mode).toLowerCase(),
+    barrier: body.barrier === undefined || body.barrier === null || body.barrier === '' ? null : Number(body.barrier),
   });
   send(res, 201, { ok: true, ...result });
 });

@@ -80,7 +80,8 @@ export const config = {
   },
 
   limits: {
-    minStakeCents: Number(env.MIN_STAKE_CENTS || 100),
+    // Bulk Trader defaults to a 0.50 stake, and digit contracts are priced from 0.35, so the floor is 35 cents.
+    minStakeCents: Number(env.MIN_STAKE_CENTS || 35),
     maxDurationTicks: 30,
     allowedTickDurations: [1, 2, 3, 5, 10, 15, 30],
     allowedSecondDurations: [15, 30, 60, 120],
@@ -88,7 +89,8 @@ export const config = {
 
   // Demo trading limits. Stakes are whole cents; durations are in ticks of the feed.
   trading: {
-    minStakeCents: Number(env.MIN_STAKE_CENTS || 100),
+    // Bulk Trader defaults to a 0.50 stake, and digit contracts are priced from 0.35, so the floor is 35 cents.
+    minStakeCents: Number(env.MIN_STAKE_CENTS || 35),
     maxStakeCents: Number(env.MAX_STAKE_CENTS || 50000),
     maxExposurePerSymbolCents: Number(env.MAX_EXPOSURE_PER_SYMBOL_CENTS || 200000),
     allowedTickDurations: [1, 2, 3, 5, 10, 15, 30],

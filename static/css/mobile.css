@@ -1,0 +1,50 @@
+/* Phone layout for the shell itself.
+ *
+ * The platform header is Deriv's desktop header: at <=767px its left toggles and its right-hand
+ * actions are both wider than the viewport, so the balance used to slide under the currency
+ * switcher. Here the header wraps onto two rows, the toggles give up their width, and the tab strip
+ * scrolls horizontally instead of clipping. Everything else (DTrader, Charts, Bot Builder) is
+ * already responsive inside its own frame.
+ */
+@media (max-width: 767px) {
+  .deriv-header.app-header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 6px 8px;
+    min-height: 0;
+    height: auto;
+  }
+  .deriv-header.app-header .deriv-wrapper {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .deriv-header.app-header .deriv-wrapper__left { flex: 0 1 auto; }
+  .deriv-header.app-header .deriv-wrapper__right { justify-content: flex-end; }
+  .app-header__right-actions,
+  .app-header__right-actions .auth-actions {
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+  }
+  .app-header__right-actions .auth-actions { overflow: hidden; }
+  /* These two only matter once there is room for them. */
+  .app-header .currency-display-toggle,
+  .app-header .social-links-button { display: none; }
+
+  /* Tab strip: swipeable, with the active tab scrolled into view by the shell already. */
+  .dc-tabs__list--top {
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .dc-tabs__list--top::-webkit-scrollbar { display: none; }
+  .dc-tabs__list--top .dc-tabs__item { flex: 0 0 auto; }
+  .dc-tabs__item--top .dc-tabs__item__label { font-size: 13px; }
+
+  /* Frames (DTrader / Charts) should not be taller than the phone can scroll to. */
+  .dtrader-tab-panel { min-height: 0; }
+}

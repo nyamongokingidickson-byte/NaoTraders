@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS trades (
   id             TEXT PRIMARY KEY,
   user_id        TEXT NOT NULL REFERENCES users(id),
   symbol         TEXT NOT NULL,
-  contract_type  TEXT NOT NULL CHECK (contract_type IN ('CALL','PUT')),
+  contract_type  TEXT NOT NULL CHECK (contract_type IN ('CALL','PUT',
+    'DIGITEVEN','DIGITODD','DIGITOVER','DIGITUNDER','DIGITMATCH','DIGITDIFF')),
   stake_cents    BIGINT NOT NULL CHECK (stake_cents > 0),
   duration_ticks INTEGER NOT NULL CHECK (duration_ticks > 0),
   entry_spot     NUMERIC(20,8) NOT NULL,
@@ -91,6 +92,15 @@ CREATE TABLE IF NOT EXISTS trades (
   opened_at      BIGINT NOT NULL,
   settled_at     BIGINT
 );
+-- Digit contracts (Even/Odd/Over/Under/Match/Diff) need the barrier they were bought at and the
+-- digit the contract actually settled on. Both are nullable so rise/fall rows are unaffected.
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS barrier INTEGER;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS last_digit INTEGER;
+-- Databases created before digit contracts existed still carry the two-type check constraint.
+ALTER TABLE trades DROP CONSTRAINT IF EXISTS trades_contract_type_check;
+ALTER TABLE trades ADD CONSTRAINT trades_contract_type_check CHECK (contract_type IN ('CALL','PUT',
+  'DIGITEVEN','DIGITODD','DIGITOVER','DIGITUNDER','DIGITMATCH','DIGITDIFF'));
+
 CREATE INDEX IF NOT EXISTS trades_user ON trades(user_id, opened_at DESC);
 CREATE INDEX IF NOT EXISTS trades_open ON trades(status) WHERE status = 'OPEN';
 

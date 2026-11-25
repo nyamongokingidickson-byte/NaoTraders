@@ -11,9 +11,35 @@
   const $ = (s) => document.querySelector(s);
   const money = (cents) => (Number(cents || 0) / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
   const nf = (v, digits = 2) => Number(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const DIGIT_TYPES = ['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
+  const BARRIER_TYPES = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
+  const LABELS = {
+    CALL: 'Rise', PUT: 'Fall', DIGITEVEN: 'Even', DIGITODD: 'Odd',
+    DIGITOVER: 'Over', DIGITUNDER: 'Under', DIGITMATCH: 'Matches', DIGITDIFF: 'Differs',
+  };
+  const isDigitType = (t) => DIGIT_TYPES.includes(t);
   const state = {
     session: null, symbols: [], market: null, ticks: [], candles: [], chart: 'ticks',
-    type: 'CALL', limits: null, payouts: [], trades: [], timer: null,
+    type: 'CALL', limits: null, payouts: [], digitMultipliers: {}, trades: [], timer: null,
+    mode: 'demo', embed: false, balances: null,
+  };
+  const params = new URLSearchParams(location.search);
+  const MODE_KEY = 'nt:active-account';
+
+  // Deriv's symbol codes (what the platform tabs pass in their links) mapped onto this feed.
+  const SYMBOL_ALIASES = {
+    '1HZ10V': 'R_10', '1HZ25V': 'R_25', '1HZ50V': 'R_50', '1HZ75V': 'R_75', '1HZ100V': 'R_100',
+    R_10: 'R_10', R_25: 'R_25', R_50: 'R_50', R_75: 'R_75', R_100: 'R_100',
+    frxEURUSD: 'frxEURUSD', frxGBPUSD: 'frxGBPUSD', frxUSDJPY: 'frxUSDJPY',
+    frxXAUUSD: 'frxXAUUSD', cryBTCUSD: 'cryBTCUSD', cryETHUSD: 'cryETHUSD', cryXRPUSD: 'cryXRPUSD',
+  };
+  const readMode = () => {
+    try { return localStorage.getItem(MODE_KEY) === 'real' ? 'real' : 'demo'; } catch { return 'demo'; }
+  };
+  const writeMode = (mode) => {
+    state.mode = mode === 'real' ? 'real' : 'demo';
+    try { localStorage.setItem(MODE_KEY, state.mode); } catch { /* private mode */ }
+    applyAccountMode();
   };
 
   async function getJSON(path, options) {
@@ -49,6 +75,7 @@
     if (limits.ok) {
       state.limits = limits.data.limits;
       state.payouts = limits.data.payouts || [];
+      state.digitMultipliers = limits.data.digitMultipliers || {};
       buildDurations();
       buildStakeChips();
     }
@@ -57,11 +84,14 @@
     if (markets.ok && markets.data.symbols.length) {
       state.symbols = markets.data.symbols;
       renderMarkets();
-      selectMarket(state.symbols[0].code);
+      const wanted = SYMBOL_ALIASES[params.get('symbol')] || params.get('symbol');
+      selectMarket(state.symbols.some((s) => s.code === wanted) ? wanted : state.symbols[0].code);
     }
 
+    state.mode = readMode();
     applyAccountMode();
-    document.addEventListener('nt:account-changed', applyAccountMode);
+    setType(params.get('trade_type') === 'digits' ? 'DIGITEVEN' : 'CALL');
+    talkToParent();
 
     await refreshTrades();
     state.timer = setInterval(tick, 2000);
@@ -70,27 +100,46 @@
     });
   }
 
-  // The header switcher selects demo or real. This page can only trade demo today: the real wallet
-  // exists but is unfunded because the cashier is not switched on, so it says so instead of quietly
-  // booking a "real" trade against demo money.
+  // One identity, two wallets. The switcher at the top of this page (and the header of the platform
+  // shell that embeds it) picks which wallet an order is booked against. Nothing is faked: a real
+  // order is really sent to the real wallet, and the platform refuses it while that wallet is
+  // unfunded — the refusal is shown verbatim instead of a made-up success.
   function applyAccountMode() {
-    const account = (() => {
-      try { return localStorage.getItem('nt:active-account') === 'real' ? 'real' : 'demo'; } catch { return 'demo'; }
-    })();
-    const real = account === 'real';
+    const real = state.mode === 'real';
+    for (const b of document.querySelectorAll('.acct button')) {
+      b.setAttribute('aria-pressed', String(b.dataset.acct === state.mode));
+    }
     const warn = $('#realWarn');
     if (warn) warn.hidden = !real;
+    const head = $('#ticketHead');
+    if (head) head.textContent = real ? 'Place a real trade' : 'Place a demo trade';
+    const note = $('#acctNote');
+    if (note) note.textContent = real ? 'real wallet' : 'virtual funds';
     const place = $('#place');
     if (place) {
-      place.disabled = real;
-      place.textContent = real ? 'Deposits not available yet' : (state.type === 'CALL' ? 'Rise' : 'Fall');
-      place.title = real ? 'Real account has no funds — deposits are not available yet' : '';
+      place.disabled = false;
+      place.textContent = LABELS[state.type] || state.type;
+      place.dataset.type = isDigitType(state.type) ? 'DIGIT' : state.type;
+      place.title = '';
     }
+    updatePreview();
+  }
+
+  function setMode(mode, { announce = false } = {}) {
+    const next = mode === 'real' ? 'real' : 'demo';
+    if (next === state.mode && announce) return;
+    writeMode(next);
+    if (announce) msg(next === 'real' ? 'Switched to the real account.' : 'Switched to the demo account.', '');
+    try { window.dispatchEvent(new CustomEvent('nt:account-changed', { detail: { mode: next } })); } catch { /* old browsers */ }
   }
 
   function renderBalances(balances) {
     if (!balances) return;
+    state.balances = balances;
     $('#balDemo').textContent = money(balances.demo.totalCents);
+    if ($('#pillDemo')) $('#pillDemo').textContent = money(balances.demo.totalCents);
+    if ($('#pillReal')) $('#pillReal').textContent = money(balances.real.totalCents);
+    if ($('#realBalInline')) $('#realBalInline').textContent = money(balances.real.totalCents);
   }
 
   // ------------------------------------------------------------------ markets
@@ -260,30 +309,55 @@
     }
   }
 
-  function multiplierFor(type, duration) {
+  function multiplierFor(type, duration, barrier) {
+    if (isDigitType(type)) {
+      if (BARRIER_TYPES.includes(type)) return state.digitMultipliers[`${type}:${Number(barrier)}`] || null;
+      return state.digitMultipliers[`${type}:0`] || state.digitMultipliers[`${type}:5`] || null;
+    }
     const row = state.payouts.find((p) => p.contractType === type && p.durationTicks === Number(duration));
     return row ? row.multiplierBp : null;
   }
+  const chosenBarrier = () => {
+    const v = Number($('#barrier') && $('#barrier').value);
+    return Number.isInteger(v) ? v : 5;
+  };
+  const effectiveDuration = () => (isDigitType(state.type) ? 1 : Number($('#duration').value || 5));
 
   function updatePreview() {
     const stake = Math.round(Number($('#stake').value || 0) * 100);
-    const duration = Number($('#duration').value || 5);
-    const bp = multiplierFor(state.type, duration);
+    const duration = effectiveDuration();
+    const bp = multiplierFor(state.type, duration, chosenBarrier());
     const el = $('#preview');
     if (!Number.isInteger(stake) || stake <= 0) { el.textContent = 'Enter a stake to see the return.'; return; }
     if (!bp) { el.textContent = 'Payout unavailable for that duration.'; return; }
     const payout = Math.floor((stake * bp) / 10000);
+    const wallet = state.mode === 'real'
+      ? `Real wallet: <b>${money(state.balances ? state.balances.real.availableCents : 0)}</b> available`
+      : `Demo wallet: <b>${money(state.balances ? state.balances.demo.availableCents : 0)}</b> available`;
+    const how = isDigitType(state.type)
+      ? `settles on the last digit of the next tick${BARRIER_TYPES.includes(state.type) ? ` against barrier ${chosenBarrier()}` : ''}`
+      : `settles ${duration} tick${duration === 1 ? '' : 's'} after entry (≈${duration * 2}s)`;
     el.innerHTML = `Stake <b>${money(stake)}</b> · payout if right <b>${money(payout)}</b> ·
       profit <b>${money(payout - stake)}</b> · loss if wrong <b>${money(stake)}</b><br>
-      Settles on the price ${duration} tick${duration === 1 ? '' : 's'} after entry (≈${duration * 2}s).`;
+      ${wallet} · ${how}.`;
   }
 
   function setType(type) {
     state.type = type;
-    for (const b of document.querySelectorAll('.types button')) b.setAttribute('aria-pressed', String(b.dataset.type === type));
+    for (const b of document.querySelectorAll('[data-type]')) {
+      if (b.id === 'place') continue;
+      b.setAttribute('aria-pressed', String(b.dataset.type === type));
+    }
+    const digit = isDigitType(type);
+    $('#barrierField').hidden = !BARRIER_TYPES.includes(type);
+    // A digit contract is a one-tick contract, so the duration control is replaced by that fact
+    // rather than left showing an irrelevant choice.
+    $('#duration').hidden = digit;
+    $('#duration').disabled = digit;
+    $('#durationNote').hidden = !digit;
     const place = $('#place');
-    place.dataset.type = type;
-    place.textContent = type === 'CALL' ? 'Rise' : 'Fall';
+    place.dataset.type = digit ? 'DIGIT' : type;
+    place.textContent = LABELS[type] || type;
     updatePreview();
   }
 
@@ -301,12 +375,20 @@
           symbol: state.market,
           contractType: state.type,
           stakeCents: Math.round(stake * 100),
-          durationTicks: Number($('#duration').value),
+          durationTicks: effectiveDuration(),
+          barrier: BARRIER_TYPES.includes(state.type) ? chosenBarrier() : null,
+          mode: state.mode,
         }),
       });
-      if (!ok) { msg(data.error || 'Could not place that contract.', 'err'); return; }
-      msg(`${data.trade.contractType === 'CALL' ? 'Rise' : 'Fall'} on ${data.trade.symbol} placed at ${nf(data.trade.entrySpot, 5)}.`, 'ok');
+      if (!ok) {
+        msg(data.error || 'Could not place that contract.', 'err');
+        post({ type: 'TRADE_REJECTED', mode: state.mode, code: data.code || '', error: data.error || '' });
+        return;
+      }
+      const labels = state.mode === 'real' ? 'Real' : 'Demo';
+      msg(`${labels} · ${data.trade.contractLabel || LABELS[data.trade.contractType] || data.trade.contractType} on ${data.trade.symbol} placed at ${nf(data.trade.entrySpot, 5)}.`, 'ok');
       renderBalances(data.balances);
+      post({ type: 'TRADE_PLACED', mode: state.mode, trade: data.trade });
       await refreshTrades();
     } catch {
       msg('Network problem — the contract was not placed.', 'err');
@@ -327,7 +409,7 @@
     $('#openBody').innerHTML = open.length
       ? open.map((t) => `<tr>
           <td><b>${t.symbol}</b></td>
-          <td>${t.contractType === 'CALL' ? 'Rise' : 'Fall'}</td>
+          <td>${t.contractLabel || LABELS[t.contractType] || t.contractType}</td>
           <td class="num">${money(t.stakeCents)}</td>
           <td class="num">${nf(t.entrySpot, 2)}</td>
           <td data-exp="${t.expiryEpoch}">${Math.max(0, Math.ceil((t.expiryEpoch - Date.now()) / 1000))}s</td>
@@ -337,7 +419,7 @@
     $('#closedBody').innerHTML = closed.length
       ? closed.slice(0, 12).map((t) => `<tr>
           <td><b>${t.symbol}</b></td>
-          <td>${t.contractType === 'CALL' ? 'Rise' : 'Fall'}</td>
+          <td>${t.contractLabel || LABELS[t.contractType] || t.contractType}</td>
           <td class="num">${money(t.stakeCents)}</td>
           <td class="num">${nf(t.entrySpot, 2)} → ${t.exitSpot === null ? '—' : nf(t.exitSpot, 2)}</td>
           <td><span class="tag ${t.status}">${t.status}</span></td>
@@ -369,11 +451,45 @@
     } finally { busy = false; }
   }
 
+  // ------------------------------------------------------------------ embedding
+  // The DTrader tab renders this page in a same-origin frame. It announces itself so the shell can
+  // hide its spinner, reports orders so the shell can toast them, and accepts the shell's account
+  // switches (AUTH_TOKEN / DTRADER_AUTH / ACCOUNT_CHANGED all name the active login id).
+  const post = (payload) => {
+    try { if (window.parent && window.parent !== window) window.parent.postMessage({ source: 'nova-trader', ...payload }, location.origin); } catch { /* detached */ }
+  };
+  const modeFromLoginId = (loginid) => (/^VRT/i.test(String(loginid || '')) ? 'demo' : 'real');
+
+  function talkToParent() {
+    const embedded = window.parent !== window;
+    if (!embedded) return;
+    post({ type: 'DTRADER_READY' });
+    post({ type: 'COMPONENTS_READY' });
+    window.addEventListener('message', (event) => {
+      if (event.origin !== location.origin) return;
+      const data = event.data || {};
+      const loginid = data.active_loginid
+        || (data.payload && (data.payload.active_loginid || data.payload.loginid))
+        || data.loginid;
+      if (loginid && /^(VRT|CR)/i.test(String(loginid))) {
+        setMode(modeFromLoginId(loginid));
+      } else if (data.type === 'DTRADER_LOGOUT') {
+        setMode('demo');
+      }
+    });
+    // late handshake: a shell that mounted before this frame existed may already have sent auth
+    post({ type: 'DTRADER_REQUEST_AUTH' });
+  }
+
   // ------------------------------------------------------------------ wiring
   $('#stake').addEventListener('input', updatePreview);
   $('#duration').addEventListener('change', updatePreview);
   $('#place').addEventListener('click', place);
-  for (const b of document.querySelectorAll('.types button')) b.addEventListener('click', () => setType(b.dataset.type));
+  for (const b of document.querySelectorAll('[data-type]')) {
+    if (b.id === 'place') continue;
+    b.addEventListener('click', () => setType(b.dataset.type));
+  }
+  if ($('#barrier')) $('#barrier').addEventListener('input', updatePreview);
   for (const b of document.querySelectorAll('.tabs button')) {
     b.addEventListener('click', async () => {
       state.chart = b.dataset.chart;
@@ -384,8 +500,16 @@
   }
   window.addEventListener('resize', draw);
 
+  for (const b of document.querySelectorAll('.acct button')) b.addEventListener('click', () => setMode(b.dataset.acct, { announce: true }));
+  // The platform shell and this page are the same origin, so a switch in either one is visible here.
+  window.addEventListener('nt:account-changed', () => { state.mode = readMode(); applyAccountMode(); });
+  window.addEventListener('storage', (e) => { if (e.key === MODE_KEY) { state.mode = readMode(); applyAccountMode(); } });
+
+  if (params.get('embed') === '1' || window.parent !== window) document.body.classList.add('embed');
+
   boot().catch(() => {
     $('#whenSignedOut').hidden = false;
     msg('Could not reach the trading API.', 'err');
+    post({ type: 'COMPONENTS_READY' });
   });
 })();

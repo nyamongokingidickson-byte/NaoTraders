@@ -151,6 +151,25 @@
   // A stale readable cookie (session expired server-side) still boots the app as signed in; the
   // first api() call answers 401 and the bridge reports InvalidToken, which is correct and visible.
 
+  // ---------------------------------------------------------------- off-platform calls
+  // The bot builder reports each run to Deriv's analytics service (dbot-conf on appspot). That host is
+  // not part of this platform and answers 422 for these payloads, which used to surface as an error
+  // every time a bot ran. The report carries nothing this platform needs, so answer it locally: no
+  // failed request, no console error, and no trade data leaving the site.
+  var DERIV_ANALYTICS = /dbot-conf|deriv-bi-reporting|(^|\/\/)([^/]*\.)?appspot\.com/i;
+  if (typeof window.fetch === 'function' && !window.fetch.__ntPatched) {
+    var nativeFetch = window.fetch.bind(window);
+    var patched = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (DERIV_ANALYTICS.test(url)) {
+        return Promise.resolve(new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return nativeFetch(input, init);
+    };
+    patched.__ntPatched = true;
+    window.fetch = patched;
+  }
+
   // ---------------------------------------------------------------- helpers
   function api(path, options) {
     return fetch(path, Object.assign({ credentials: 'same-origin', cache: 'no-store', headers: { accept: 'application/json' } }, options || {}))
@@ -187,6 +206,21 @@
     if (/JPY/.test(s)) return 'frxUSDJPY';
     if (/XAU|GOLD/.test(s)) return 'frxXAUUSD';
     return 'R_100';
+  }
+
+  // Mirrors digitMultiplierBp in src/cloud/trading.js so the quote a bot or bulk trader sees is the
+  // payout the server will actually pay: (1 - 4% margin) / probability of winning.
+  function digitMultiplierBp(type, barrier) {
+    var b = Number(barrier);
+    var p;
+    if (type === 'DIGITEVEN' || type === 'DIGITODD') p = 0.5;
+    else if (type === 'DIGITOVER') p = (9 - b) / 10;
+    else if (type === 'DIGITUNDER') p = b / 10;
+    else if (type === 'DIGITMATCH') p = 0.1;
+    else if (type === 'DIGITDIFF') p = 0.9;
+    else return null;
+    if (!(p > 0) || p > 1) return null;
+    return Math.round(((1 - 0.04) / p) * 10000);
   }
 
   function digitsFor(market) {
@@ -272,7 +306,9 @@
       symbol: req.symbol || req.ticks || req.ticks_history || req.candles || '',
       subscribe: req.subscribe ? 1 : 0, contract: req.contract_id || '',
       detail: (req.buy || req.proposal)
-        ? { buy: req.buy, proposal: req.proposal, price: req.price, underlying: (req.parameters || {}).underlying_symbol || req.symbol }
+        ? { buy: req.buy, proposal: req.proposal, price: req.price, underlying: (req.parameters || {}).underlying_symbol || req.symbol,
+            contract_type: req.contract_type || (req.parameters || {}).contract_type || '',
+            barrier: req.barrier || (req.parameters || {}).barrier || '' }
         : null,
     });
     if (stats.log.length > 200) stats.log.shift();
@@ -724,14 +760,19 @@
 
   function buildProposal(socket, req) {
     var market = mapSymbol(req.symbol || (req.proposal && req.proposal.symbol));
-    var type = (req.contract_type || (req.proposal && req.proposal.contract_type) || 'CALL').toUpperCase();
+    var type = String(req.contract_type || (req.proposal && req.proposal.contract_type) || 'CALL').toUpperCase();
     var duration = Number(req.duration || 5);
     var stake = Number(req.amount || 10);
+    var barrier = req.barrier !== undefined ? req.barrier : (req.proposal && req.proposal.barrier);
+    var isDigit = /^DIGIT/.test(type);
+    if (isDigit) duration = 1;
     return Promise.all([loadMarkets(), api('/api/trading/limits')]).then(function (out) {
       var map = out[0], limits = out[1];
       var meta = map[market] || { last: 0, digits: 2 };
       var ladder = (limits.body.payouts || []).filter(function (p) { return p.contractType === type; });
-      var row = ladder.filter(function (p) { return p.durationTicks === duration; })[0] || ladder[0] || { multiplierBp: 18800 };
+      var row = ladder.filter(function (p) { return p.durationTicks === duration; })[0] || ladder[0];
+      if (isDigit) { var digitBp = digitMultiplierBp(type, Number(barrier)); if (digitBp) row = { multiplierBp: digitBp }; }
+      if (!row) row = { multiplierBp: 18800 };
       // Deriv quotes proposals in currency units to the cent (stake 10 @ 1.88x => 18.8), not floored dollars.
       var payout = Math.round((stake * row.multiplierBp) / 100) / 100;
       socket._deliver({
@@ -745,23 +786,38 @@
           spot_time: Math.floor(Date.now() / 1000),
           display_value: String(payout),
           date_start: Math.floor(Date.now() / 1000),
-          longcode: (type === 'CALL' ? 'Rise' : 'Fall') + ' in ' + market + ' for ' + duration + ' ticks',
+          longcode: contractLabel(type) + ' in ' + market + ' for ' + duration + ' tick' + (duration === 1 ? '' : 's'),
           contract_type: type,
           symbol: market,
           duration: duration + 't',
-          barrier: '0',
+          barrier: barrier === null || barrier === undefined ? '0' : String(barrier),
           spot_time_expiry: Math.floor(Date.now() / 1000) + duration * 2,
         },
       });
     });
   }
 
+  // Deriv contract codes and the names the platform UI shows for them.
+  var CONTRACT_NAMES = {
+    CALL: 'Rise', PUT: 'Fall',
+    DIGITEVEN: 'Even', DIGITODD: 'Odd',
+    DIGITOVER: 'Over', DIGITUNDER: 'Under',
+    DIGITMATCH: 'Matches', DIGITDIFF: 'Differs',
+  };
+  function contractLabel(type) { return CONTRACT_NAMES[type] || type; }
+
   function handleBuy(socket, req) {
     var params = req.parameters || {};
     var market = mapSymbol(params.symbol || params.underlying_symbol || req.symbol || (ALIASES[req.buy] ? req.buy : ''));
     var amount = Number(params.amount || req.price || 10);
-    var type = (req.parameters && req.parameters.contract_type) || (req.contract_type) || 'CALL';
+    var type = String((req.parameters && req.parameters.contract_type) || req.contract_type || 'CALL').toUpperCase();
     var duration = Number((req.parameters && req.parameters.duration) || req.duration || 5);
+    // Digit contracts carry their barrier as a digit; the server settles on the expiry tick's last digit.
+    var isDigit = /^DIGIT/.test(type);
+    var barrier = params.barrier !== undefined ? params.barrier
+      : (req.barrier !== undefined ? req.barrier : (req.parameters && req.parameters.barrier));
+    barrier = barrier === undefined || barrier === null || barrier === '' ? null : Number(barrier);
+    if (isDigit) duration = 1;
 
     return Promise.all([api('/api/auth/session'), api('/api/markets/' + encodeURIComponent(market) + '/ticks?count=1')]).then(function (out) {
       var session = out[0], tick = (out[1].body.ticks || [])[0];
@@ -774,10 +830,11 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           symbol: market,
-          contractType: String(type).toUpperCase(),
+          contractType: type,
           stakeCents: Math.round(amount * 100),
           durationTicks: duration,
           mode: mode,
+          barrier: isDigit ? barrier : null,
         }),
       }).then(function (res) {
         if (!res.ok) {
@@ -798,7 +855,7 @@
             start_time: Math.floor(t.entryEpoch / 1000),
             purchase_time: Math.floor(t.entryEpoch / 1000),
             balance_after: ((res.body.balances || {})[mode] || {}).totalCents / 100,
-            longcode: (t.contractType === 'CALL' ? 'Rise' : 'Fall') + ' ' + t.symbol,
+            longcode: contractLabel(t.contractType) + ' ' + t.symbol,
             shortcode: t.id,
           },
         });
@@ -824,7 +881,7 @@
       profit_percentage: stake ? Number(((profit / stake) * 100).toFixed(2)) : 0,
       contract_type: t.contractType,
       symbol: t.symbol,
-      longcode: (t.contractType === 'CALL' ? 'Rise' : 'Fall') + ' in ' + t.symbol + ' for ' + t.durationTicks + ' ticks',
+      longcode: contractLabel(t.contractType) + ' in ' + t.symbol + ' for ' + t.durationTicks + ' tick' + (t.durationTicks === 1 ? '' : 's'),
       entry_spot: entry,
       entry_tick: entry,
       current_spot: settled ? exit : entry,

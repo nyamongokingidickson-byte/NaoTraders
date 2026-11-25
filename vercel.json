@@ -39,6 +39,10 @@
       "destination": "/trade.html"
     },
     {
+      "source": "/xml/:host/:file",
+      "destination": "/xml/:file"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

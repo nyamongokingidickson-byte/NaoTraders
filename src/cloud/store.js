@@ -7,30 +7,47 @@ export const now = () => Date.now();
 export const newId = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 
 // ---------------------------------------------------------------- accounts / ledger
-export async function ensureAccounts(userId) {
+// The platform's own accounts and each customer's three wallets have to exist before any money can
+// move. Both are idempotent in SQL, but issuing them as a round trip per account made every request
+// that touches money wait on a dozen remote queries (6s for one trade against a hosted Postgres).
+// They are therefore remembered per process: one platform pass, one pass per customer.
+let platformAccounts = null;
+const customerAccounts = new Set();
+const PLATFORM_ACCOUNTS = [
+  ['deposit_clearing', 'Cashier deposits in transit', 'asset'],
+  ['withdrawal_clearing', 'Cashier withdrawals out', 'asset'],
+  ['escrow', 'Customer stakes in play', 'liability'],
+  ['platform_revenue', 'Platform trading revenue', 'revenue'],
+  ['house_capital', 'House capital', 'equity'],
+  // Counterparty for virtual demo credits, so demo funding stays a balanced journal entry.
+  ['demo_house', 'Demo funds issuer (virtual)', 'equity'],
+];
+
+async function insertPlatformAccounts() {
   const t = now();
-  const platform = [
-    ['deposit_clearing', 'Cashier deposits in transit', 'asset'],
-    ['withdrawal_clearing', 'Cashier withdrawals out', 'asset'],
-    ['escrow', 'Customer stakes in play', 'liability'],
-    ['platform_revenue', 'Platform trading revenue', 'revenue'],
-    ['house_capital', 'House capital', 'equity'],
-    // Counterparty for virtual demo credits, so demo funding stays a balanced journal entry.
-    ['demo_house', 'Demo funds issuer (virtual)', 'equity'],
-  ];
   await tx(async (c) => {
-    for (const [code, name, type] of platform) {
+    for (const [code, name, type] of PLATFORM_ACCOUNTS) {
       await c.query('INSERT INTO accounts(code,name,type,created_at) VALUES($1,$2,$3,$4) ON CONFLICT (code) DO NOTHING', [code, name, type, t]);
     }
-    if (userId) {
-      await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
-        [`customer:${userId}`, `Customer wallet ${userId}`, 'liability', userId, t]);
-      await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
-        [`hold:${userId}`, `Customer withdrawal holds ${userId}`, 'liability', userId, t]);
-      await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
-        [`demo:${userId}`, `Demo wallet ${userId} (virtual)`, 'liability', userId, t]);
-    }
   });
+}
+
+export async function ensureAccounts(userId) {
+  if (!platformAccounts) {
+    platformAccounts = insertPlatformAccounts().catch((err) => { platformAccounts = null; throw err; });
+  }
+  await platformAccounts;
+  if (!userId || customerAccounts.has(userId)) return;
+  const t = now();
+  await tx(async (c) => {
+    await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
+      [`customer:${userId}`, `Customer wallet ${userId}`, 'liability', userId, t]);
+    await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
+      [`hold:${userId}`, `Customer withdrawal holds ${userId}`, 'liability', userId, t]);
+    await c.query('INSERT INTO accounts(code,name,type,owner_user_id,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING',
+      [`demo:${userId}`, `Demo wallet ${userId} (virtual)`, 'liability', userId, t]);
+  });
+  customerAccounts.add(userId);
 }
 
 /**
@@ -39,11 +56,13 @@ export async function ensureAccounts(userId) {
  * ledger stays balanced and the number on screen is derived, never stored or made up.
  * Idempotent — keyed on the transaction ref, so repeat calls cannot double-credit.
  */
+const seededDemo = new Set();
 export async function seedDemoFunds(userId, cents) {
   if (!Number.isInteger(cents) || cents <= 0) return { credited: false, cents: 0 };
+  if (seededDemo.has(userId)) return { credited: false, cents: 0 };
   const ref = `demo-seed:${userId}`;
   const existing = await one('SELECT id FROM txns WHERE ref=$1 LIMIT 1', [ref]);
-  if (existing) return { credited: false, cents: 0 };
+  if (existing) { seededDemo.add(userId); return { credited: false, cents: 0 }; }
 
   const txnId = newId('txn');
   const t = now();
@@ -53,6 +72,7 @@ export async function seedDemoFunds(userId, cents) {
     await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, `demo:${userId}`, cents, t]);
     await c.query('INSERT INTO entries(txn_id,account_code,amount,created_at) VALUES($1,$2,$3,$4)', [txnId, 'demo_house', -cents, t]);
   });
+  seededDemo.add(userId);
   return { credited: true, cents };
 }
 
